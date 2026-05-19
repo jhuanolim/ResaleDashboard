@@ -2907,6 +2907,22 @@ function renderTrends() {
   const peakPrice = Math.max(...validNat.map(d => d.med));
   const peakMonth = validNat.find(d => d.med === peakPrice)?.m;
 
+  // Previous equivalent period median for the delta badge on the headline KPI
+  const prevPeriodMedian = (() => {
+    const fullNat = (DB.national_timeline || []).filter(d => d.med != null);
+    if (!fullNat.length || validNat.length < 2) return null;
+    const periodLen = validNat.length;
+    // Find where the current period starts in the full timeline
+    const startIdx = fullNat.findIndex(d => d.m === first.m);
+    if (startIdx < periodLen) return null; // not enough history
+    const prevSlice = fullNat.slice(startIdx - periodLen, startIdx);
+    const prices = prevSlice.map(d => d.med).sort((a, b) => a - b);
+    return prices[Math.floor(prices.length / 2)];
+  })();
+  const vsEqPeriodChg = prevPeriodMedian
+    ? (latest.med - prevPeriodMedian) / prevPeriodMedian * 100
+    : null;
+
   const p = trendsState.period;
   const periodLabel = p === "1y" ? "1Y" : p === "3y" ? "3Y" : p === "5y" ? "5Y" : "All-time";
   const periodChgLabel = `${periodLabel} change`;
@@ -2942,9 +2958,12 @@ function renderTrends() {
     <div class="trends-kpis">
       <div class="td-card">
         <div class="kpi">
-          <div class="kpi-label">Latest median</div>
-          <div class="kpi-value">${fmtKs(latest.med)}</div>
-          <div class="kpi-sub">${fmtMonth(latest.m)}</div>
+          <div class="kpi-label">Median resale price</div>
+          <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px">
+            ${fmtKs(latest.med)}
+            ${vsEqPeriodChg != null ? `<span class="kpi-delta-badge${vsEqPeriodChg >= 0 ? " up" : " down"}">${vsEqPeriodChg >= 0 ? "▲" : "▼"} ${Math.abs(vsEqPeriodChg).toFixed(1)}%</span>` : ""}
+          </div>
+          <div class="kpi-sub">${fmtMonth(latest.m)} · vs prev ${periodLabel === "All-time" ? "period" : periodLabel}</div>
         </div>
       </div>
       <div class="td-card">
