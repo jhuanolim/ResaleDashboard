@@ -2805,6 +2805,14 @@ document.addEventListener("DOMContentLoaded", () => {
     tab.addEventListener("click", () => showView(tab.dataset.view));
   });
 
+  // On mobile, start with sidebar hidden so map is visible
+  if (window.innerWidth <= 768) {
+    state.sidebarOpen = false;
+    document.getElementById("filterSidebar").classList.add("hidden");
+    document.getElementById("mapLegend").classList.add("sidebar-hidden");
+    document.getElementById("sidebarOpenBtn").style.display = "flex";
+  }
+
   // Sidebar toggle
   document.getElementById("sidebarToggle").addEventListener("click", () => {
     state.sidebarOpen = false;
