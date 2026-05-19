@@ -148,6 +148,8 @@
       cursor: pointer; transition: all 0.15s;
     }
     .reset-btn:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+    .sidebar-done-btn-wrap { display: none; }
+    @media (max-width: 768px) { .sidebar-done-btn-wrap { display: flex; } }
   </style>
 </head>
 <body>
@@ -269,6 +271,13 @@
         <!-- Reset -->
         <div class="filter-section">
           <button class="reset-btn" id="resetFiltersBtn" onclick="resetFilters()">Reset all filters</button>
+        </div>
+
+        <!-- Mobile close button at bottom -->
+        <div class="filter-section sidebar-done-btn-wrap">
+          <button class="sidebar-done-btn" onclick="document.getElementById('sidebarToggle').click()">
+            Done — Show Map
+          </button>
         </div>
 
       </div><!-- /sidebar-body -->
