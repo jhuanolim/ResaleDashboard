@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HDB Resale Atlas — Singapore</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="app.css" />
+
+  <style>
+    /* ── Loading overlay ─────────────────────────────── */
+    #loading {
+      position: fixed; inset: 0; z-index: 9999;
+      background: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 20px;
+      transition: opacity 0.4s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .loading-inner { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    .loading-logo { display: flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 700; color: var(--ink); }
+    .loading-bar-wrap { width: 280px; height: 3px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
+    .loading-bar { height: 100%; width: 0%; background: var(--accent); border-radius: 2px; transition: width 0.4s cubic-bezier(0.4,0,0.2,1); }
+    .loading-label { font-size: 13px; color: var(--ink-3); }
+    .loading-sub { font-size: 12px; color: var(--red); margin-top: 4px; text-align: center; max-width: 360px; }
+
+    /* ── Full-height layout shell ─────────────────── */
+    body { overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+    .topnav { flex: 0 0 auto; }
+    .main { flex: 1; overflow: hidden; position: relative; }
+    .view { display: none; width: 100%; height: 100%; }
+    .view.active { display: flex; }
+    [data-view="map"].view.active { position: relative; }
+
+    /* ── Sidebar open button (when sidebar hidden) ─── */
+    .sidebar-open-btn {
+      position: absolute; top: 12px; left: 12px; z-index: 11;
+      height: 36px; padding: 0 14px; border-radius: var(--r-sm);
+      background: var(--accent); backdrop-filter: blur(12px);
+      border: 1px solid var(--accent); color: #fff;
+      cursor: pointer; display: flex; align-items: center; gap: 7px;
+      font-size: 12px; font-weight: 600;
+      box-shadow: var(--sh-md); transition: all 0.15s;
+    }
+    .sidebar-open-btn:hover { background: var(--accent-2); border-color: var(--accent-2); }
+
+    /* ── Map overlay buttons (top-right row) ─────────── */
+    .map-btn-row {
+      position: absolute; top: 12px; right: 12px; z-index: 10;
+      display: flex; gap: 6px; align-items: center;
+    }
+    .map-style-btn {
+      height: 36px; padding: 0 12px; border-radius: var(--r-sm);
+      background: rgba(22,25,32,0.92); backdrop-filter: blur(12px);
+      border: 1px solid var(--line-2); color: var(--ink-2); font-size: 12px; font-weight: 500;
+      cursor: pointer; display: flex; align-items: center; gap: 6px;
+      box-shadow: var(--sh-sm); transition: all 0.15s;
+    }
+    .map-style-btn:hover { border-color: var(--line-2); color: var(--ink); }
+    .map-style-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+    /* ── Back button in town view ─────────────────── */
+    .back-btn {
+      display: flex; align-items: center; gap: 8px;
+      height: 34px; padding: 0 12px; border-radius: var(--r-sm);
+      background: var(--surface); border: 1px solid var(--line-2);
+      color: var(--ink-2); font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .back-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Town view layout ─────────────────────────── */
+    [data-view="town"].view.active { flex-direction: column; background: var(--bg); overflow: hidden; }
+    .town-view-header {
+      flex: 0 0 auto; padding: 0 24px; height: 56px;
+      display: flex; align-items: center; gap: 14px;
+      border-bottom: 1px solid var(--line); background: var(--bg-1);
+    }
+    .town-view-title { font-size: 20px; font-weight: 700; color: var(--ink); letter-spacing: -0.02em; }
+    .town-view-body {
+      flex: 1; overflow-y: auto; padding: 24px;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    .hero-stats-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+    .town-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .flip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .trend-chart { width: 100%; min-height: 140px; }
+    .txn-table-wrap { overflow-x: auto; }
+
+    /* ── Compare view layout ──────────────────────── */
+    [data-view="compare"].view.active { flex-direction: column; background: var(--bg); overflow: hidden; }
+    .compare-header { flex: 0 0 auto; padding: 20px 24px; border-bottom: 1px solid var(--line); background: var(--bg-1); }
+    .section-title { font-size: 18px; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+    .section-sub { font-size: 13px; color: var(--ink-3); margin-bottom: 14px; }
+    .compare-body { flex: 1; overflow-y: auto; padding: 24px; }
+
+    /* ── Trends view layout ───────────────────────── */
+    [data-view="trends"].view.active { flex-direction: column; background: var(--bg); overflow: hidden; }
+    [data-view="trends"] .trends-inner { overflow-y: auto; }
+
+    /* ── Modal: also use flex when open ──────────────  */
+    .modal-overlay.open { display: grid !important; }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; }
+    .modal-title { font-size: 18px; font-weight: 700; color: var(--ink); }
+    .modal-close {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--surface-2); border: 1px solid var(--line-2);
+      color: var(--ink-3); cursor: pointer; display: grid; place-items: center;
+      transition: all 0.15s;
+    }
+    .modal-close:hover { background: var(--red-soft); color: var(--red); }
+    .modal-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; max-height: 400px; }
+
+    /* ── Filter sidebar internal structure ────────── */
+    .sidebar-header {
+      padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .sidebar-title { font-size: 13px; font-weight: 600; color: var(--ink-2); letter-spacing: 0.06em; text-transform: uppercase; }
+    .sidebar-close-btn {
+      height: 28px; padding: 0 10px; border-radius: var(--r-sm);
+      background: var(--surface-3); border: 1px solid var(--line-2);
+      color: var(--ink-2); cursor: pointer; display: flex; align-items: center; gap: 5px;
+      font-size: 11px; font-weight: 600;
+      transition: all 0.15s;
+    }
+    .sidebar-close-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .sidebar-body { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 18px; }
+    .filter-section { display: flex; flex-direction: column; gap: 8px; }
+    .filter-label { font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.08em; }
+    .filter-chip-group { display: flex; flex-wrap: wrap; gap: 6px; }
+    .price-range-track { position: relative; height: 4px; background: var(--surface-3); border-radius: 2px; margin: 12px 0 6px; }
+    .price-range-fill { position: absolute; height: 100%; background: var(--accent); border-radius: 2px; }
+    .price-range-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+    .reset-btn {
+      height: 36px; width: 100%; border-radius: var(--r-md);
+      background: transparent; border: 1px solid var(--line-2);
+      color: var(--ink-3); font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .reset-btn:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+  </style>
+</head>
+<body>
+
+<!-- ── Loading overlay ─────────────────────────────────────────────── -->
+<div id="loading">
+  <div class="loading-inner">
+    <div class="loading-logo">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+        <rect width="36" height="36" rx="10" fill="#6c8cff"/>
+        <text x="18" y="25" text-anchor="middle" fill="white" font-size="18" font-weight="700" font-family="Inter,sans-serif">H</text>
+      </svg>
+      <span>HDB Resale Atlas</span>
+    </div>
+    <div class="loading-bar-wrap">
+      <div class="loading-bar" id="loadingBar"></div>
+    </div>
+    <div class="loading-label" id="loadingLabel">Loading data…</div>
+    <div class="loading-sub"></div>
+  </div>
+</div>
+
+<!-- ── Top navigation ──────────────────────────────────────────────── -->
+<nav class="topnav">
+  <div class="topnav-left">
+    <div class="topnav-logo">
+      <div class="topnav-logo-icon">H</div>
+      <span class="topnav-logo-text">HDB Resale <span>Atlas</span></span>
+    </div>
+  </div>
+  <div class="topnav-tabs" id="topnavTabs">
+    <button class="topnav-tab active" data-view="map">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6z"/></svg>
+      Map
+    </button>
+    <button class="topnav-tab" data-view="compare">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
+      Compare
+    </button>
+    <button class="topnav-tab" data-view="trends">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+      Trends
+    </button>
+  </div>
+  <div class="topnav-right">
+    <div class="data-badge" id="dataBadge">
+      <span class="data-badge-dot"></span> Loading…
+    </div>
+  </div>
+</nav>
+
+<!-- ── Main content area ───────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- ══════════ MAP VIEW ══════════ -->
+  <div class="view active" data-view="map">
+
+    <!-- Filter sidebar -->
+    <aside class="filter-sidebar" id="filterSidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Filters</span>
+        <button class="sidebar-close-btn" id="sidebarToggle" title="Collapse filters">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+          Hide
+        </button>
+      </div>
+      <div class="sidebar-body">
+
+        <!-- Flat type chips -->
+        <div class="filter-section">
+          <div class="filter-label">Flat type</div>
+          <div class="filter-chip-group" id="filterTypes">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <!-- Price range -->
+        <div class="filter-section">
+          <div class="filter-label">Price range</div>
+          <div class="price-range-track">
+            <div class="price-range-fill" id="priceRangeFill"></div>
+            <input type="range" class="range-input range-min" id="priceRangeMin" min="0" max="2000" value="0" />
+            <input type="range" class="range-input range-max" id="priceRangeMax" min="0" max="2000" value="2000" />
+          </div>
+          <div class="price-range-labels">
+            <span id="priceMin">$0</span>
+            <span id="priceMax">$2M+</span>
+          </div>
+        </div>
+
+        <!-- Lease commence year -->
+        <div class="filter-section">
+          <div class="filter-label">Lease start year</div>
+          <div class="price-range-track">
+            <div class="price-range-fill" id="leaseRangeFill"></div>
+            <input type="range" class="range-input range-min" id="leaseRangeMin" min="1960" max="2030" value="1960" />
+            <input type="range" class="range-input range-max" id="leaseRangeMax" min="1960" max="2030" value="2030" />
+          </div>
+          <div class="price-range-labels">
+            <span id="leaseMin">1960</span>
+            <span id="leaseMax">2030</span>
+          </div>
+        </div>
+
+        <!-- Transaction year range -->
+        <div class="filter-section">
+          <div class="filter-label">Transaction year</div>
+          <div class="price-range-track">
+            <div class="price-range-fill" id="txnRangeFill"></div>
+            <input type="range" class="range-input range-min" id="txnRangeMin" min="2017" max="2026" value="2017" oninput="onTxnMinChange(this.value)" />
+            <input type="range" class="range-input range-max" id="txnRangeMax" min="2017" max="2026" value="2026" oninput="onTxnMaxChange(this.value)" />
+          </div>
+          <div class="price-range-labels">
+            <span id="txnMin">2017</span>
+            <span id="txnMax">2026</span>
+          </div>
+        </div>
+
+        <!-- Reset -->
+        <div class="filter-section">
+          <button class="reset-btn" id="resetFiltersBtn" onclick="resetFilters()">Reset all filters</button>
+        </div>
+
+      </div><!-- /sidebar-body -->
+    </aside>
+
+    <!-- Sidebar open toggle (shown when sidebar is collapsed) -->
+    <button class="sidebar-open-btn" id="sidebarOpenBtn" style="display:none" title="Show filters"
+      onclick="document.getElementById('sidebarToggle').click()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+      Filters
+    </button>
+
+    <!-- The Leaflet map -->
+    <div id="map"></div>
+
+    <!-- Top-right button row -->
+    <div class="map-btn-row">
+      <button class="map-style-btn active" id="mrtToggleBtn" onclick="toggleMRT()" title="Toggle MRT lines">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></svg>
+        MRT
+      </button>
+      <button class="map-style-btn" id="busToggleBtn" onclick="toggleBus()" title="Toggle bus stops">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M3 9h18M8 21l2-5M16 21l-2-5M7 21h10"/></svg>
+        Bus
+      </button>
+      <button class="map-style-btn" id="mapStyleBtn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/><path d="M2 12h20"/></svg>
+        Light
+      </button>
+    </div>
+
+    <!-- Legend -->
+    <div class="map-legend" id="mapLegend">
+      <div class="legend-title">Median price</div>
+      <div class="legend-scale">
+        <div class="legend-item"><span class="legend-dot" style="background:#4ade80"></span>&lt; $400k</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#60a5fa"></span>$400 – 600k</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#a78bfa"></span>$600 – 800k</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#fb923c"></span>$800k – $1M</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#f87171"></span>&gt; $1M</div>
+      </div>
+    </div>
+
+    <!-- Zoom hint -->
+    <div class="zoom-hint" id="zoomHint">
+      <div class="zoom-hint-row">
+        <span class="zoom-level-pill active" data-zoom="12">Overview</span>
+        Clusters — size = density, colour = price
+      </div>
+      <div class="zoom-hint-row">
+        <span class="zoom-level-pill" data-zoom="14">Street</span>
+        Individual blocks with price
+      </div>
+      <div class="zoom-hint-row">
+        <span class="zoom-level-pill" data-zoom="16">Detail</span>
+        Full block pins
+      </div>
+    </div>
+
+    <!-- Town drawer (slides in from right) -->
+    <div class="town-drawer" id="townDrawer">
+      <!-- Populated by JS when a town is clicked -->
+    </div>
+
+  </div><!-- /map view -->
+
+  <!-- ══════════ TOWN DASHBOARD VIEW ══════════ -->
+  <div class="view" data-view="town">
+    <div class="town-view-header">
+      <button class="back-btn" id="townBackBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        Back
+      </button>
+      <div id="townViewTitle" style="font-size:20px;font-weight:800;color:var(--ink);letter-spacing:-0.02em"></div>
+    </div>
+    <div class="town-view-body" id="townViewBody">
+      <!-- Fully rendered by JS -->
+    </div>
+  </div><!-- /town view -->
+
+  <!-- ══════════ COMPARE VIEW ══════════ -->
+  <div class="view" data-view="compare">
+    <div class="compare-header">
+      <h2 class="section-title">Compare towns</h2>
+      <p class="section-sub">Add up to 3 towns to compare side by side</p>
+      <div class="compare-slots" id="compareSlots">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+    <div class="compare-body" id="compareBody">
+      <div class="empty-state">Add towns above to compare them side by side.</div>
+    </div>
+  </div><!-- /compare view -->
+
+  <!-- ══════════ TRENDS VIEW ══════════ -->
+  <div class="view" data-view="trends">
+    <div class="trends-inner" id="trendsBody">
+      <!-- Populated by JS -->
+    </div>
+  </div><!-- /trends view -->
+
+</main>
+
+<!-- ── Town picker modal ────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Choose a town</span>
+      <button class="modal-close" onclick="closeTownPicker()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <input type="text" class="modal-search" id="modalSearch" placeholder="Search towns…" autocomplete="off" />
+    <div class="modal-list" id="modalTownList">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
