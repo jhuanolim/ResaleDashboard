@@ -1172,26 +1172,124 @@ body {
 .trends-town-sort-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
 /* ── Mobile responsiveness ───────────────────────────────────────────────── */
+/* ── Tablet (≤1024px) ────────────────────────────────────────────────────── */
 @media (max-width: 1024px) {
-  .td-col-7, .td-col-8 { grid-column: span 12; }
-  .td-col-5, .td-col-4 { grid-column: span 12; }
-  .td-col-6 { grid-column: span 12; }
+  .td-col-8              { grid-column: span 12; }
+  .td-col-7              { grid-column: span 12; }
+  .td-col-5              { grid-column: span 12; }
+  .td-col-4              { grid-column: span 6; }
+  .td-col-6              { grid-column: span 12; }
   .trends-col-7, .trends-col-5 { grid-column: span 12; }
-  .trends-col-6 { grid-column: span 12; }
-  .trends-col-4 { grid-column: span 6; }
-  .trends-col-3 { grid-column: span 6; }
+  .trends-col-6          { grid-column: span 12; }
+  .trends-col-4          { grid-column: span 6; }
+  .trends-col-3          { grid-column: span 6; }
+
+  /* Town drawer becomes full-width bottom sheet */
+  .town-drawer {
+    top: auto; right: 0; left: 0; bottom: 0;
+    width: 100%; border-radius: var(--r-lg) var(--r-lg) 0 0;
+    max-height: 75vh;
+    transform: translateY(110%);
+  }
+  .town-drawer.open { transform: translateY(0); }
+
+  /* Filter sidebar takes full height, slightly narrower */
+  .filter-sidebar { width: 260px; }
+
+  /* Map buttons stack if needed */
+  .map-btn-row { gap: 4px; }
+  .map-style-btn { padding: 0 9px; font-size: 11px; }
 }
+
+/* ── Mobile (≤768px) ─────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-  .td-page, .trends-page { grid-template-columns: 1fr; }
+  /* Body — allow scrolling in content views */
+  body { overflow: hidden; }
+  [data-view="town"].view.active,
+  [data-view="compare"].view.active,
+  [data-view="trends"].view.active { overflow-y: auto; }
+
+  /* Nav — hide logo text, compress tabs */
+  .topnav { padding: 0 12px; gap: 0; height: 52px; }
+  .topnav-logo-text { display: none; }
+  .topnav-logo { margin-right: 8px; }
+  .topnav-tab { padding: 0 10px; font-size: 12px; gap: 5px; height: 32px; }
+  .topnav-tab svg { width: 14px; height: 14px; }
+  .data-badge { display: none; }
+
+  /* All grid columns collapse to full width */
+  .td-page, .trends-page { grid-template-columns: 1fr; gap: 10px; }
   .td-col-12, .td-col-8, .td-col-7, .td-col-6,
-  .td-col-5, .td-col-4, .td-kpi-strip,
+  .td-col-5, .td-col-4,
   .trends-col-12, .trends-col-7, .trends-col-6,
-  .trends-col-5, .trends-col-4, .trends-col-3,
-  .trends-kpi-bar { grid-column: 1 / -1 !important; }
-  .td-kpi-strip { grid-template-columns: 1fr 1fr; }
-  .trends-kpi-bar { grid-template-columns: 1fr 1fr; }
+  .trends-col-5, .trends-col-4, .trends-col-3 { grid-column: 1 / -1 !important; }
+
+  /* KPI strips — 2 columns */
+  .td-kpi-strip    { grid-template-columns: 1fr 1fr; }
+  .trends-kpi-bar  { grid-template-columns: 1fr 1fr; }
+
+  /* Reduce page padding */
+  .town-view-body  { padding: 10px 12px 24px; }
+  .trends-inner    { padding: 10px 12px 24px; }
+  .compare-body    { padding: 12px; }
+  .compare-header  { padding: 12px 14px; flex-wrap: wrap; gap: 10px; }
+
+  /* Compare slots wrap and shrink */
+  .compare-slots   { flex-wrap: wrap; gap: 8px; }
+  .compare-slot    { min-width: 0; flex: 1 1 120px; height: 38px; font-size: 12px; }
+
+  /* Town drawer — full-screen bottom sheet */
+  .town-drawer {
+    top: auto; right: 0; left: 0; bottom: 0;
+    width: 100%; border-radius: var(--r-lg) var(--r-lg) 0 0;
+    max-height: 82vh;
+    transform: translateY(110%);
+  }
+  .town-drawer.open { transform: translateY(0); }
+  .town-drawer-hero { height: 120px; }
+
+  /* Filter sidebar — full screen overlay on mobile */
+  .filter-sidebar {
+    top: 0; left: 0; bottom: 0; right: 0;
+    width: 100%; border-radius: 0;
+  }
+  .filter-sidebar.hidden { transform: translateX(-110%); }
+
+  /* Sidebar open button repositioned */
+  .sidebar-open-btn { top: 8px; left: 8px; }
+
+  /* Map buttons */
+  .map-btn-row { top: 8px; right: 8px; gap: 4px; }
+  .map-style-btn { height: 32px; padding: 0 8px; font-size: 11px; gap: 4px; }
+  .map-style-btn svg { width: 12px; height: 12px; }
+  .leaflet-top.leaflet-right .leaflet-control-zoom { margin-top: 50px !important; }
+
+  /* Hero cards — reduce padding */
+  .td-card-hero  { padding: 14px 16px; }
+  .td-card       { padding: 14px 16px; }
+
+  /* Budget pills — smaller */
+  .td-budget-pill { font-size: 10px; padding: 3px 8px; }
+
+  /* Type trend chart — let SVG breathe */
+  .td-spark-wrap  { overflow-x: auto; }
+
+  /* Transaction table — horizontal scroll */
+  .txn-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .txn-table      { min-width: 560px; }
+
+  /* Town grid — 2 cols on mobile */
   .trends-town-grid { grid-template-columns: repeat(2, 1fr); }
-  .town-view-body, .trends-inner { padding: 12px 14px 24px; }
+
+  /* Amenity compare grid */
+  .cmp-amenity-grid { overflow-x: auto; }
+
+  /* Fit hero large number */
+  .td-fit-hero span[style*="font-size:28px"] { font-size: 22px !important; }
+
+  /* Section divider labels smaller */
+  .td-section-divider-label,
+  .trends-section-div-label { font-size: 9px; }
 }
 
 /* ── Utility ─────────────────────────────────────────────────────────────── */
