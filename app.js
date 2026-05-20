@@ -2880,12 +2880,25 @@ function buildTownMovers() {
     const prev = tl[0].med;
     const medianVal = now || s.median;
 
-    // Vol: sum the vol field from the period-sliced national-aligned town timeline
-    // getTrendsTownTL gives the full type-filtered timeline; slice to match period length
-    const fullTownTl = getTrendsTownTL(id).filter(d => d.med != null);
-    const periodLen  = tl.length;
-    const volSlice   = fullTownTl.slice(-periodLen);
-    const volInPeriod = volSlice.reduce((sum, d) => sum + (d.vol || 0), 0) || s.vol;
+    // Vol: sum block vol_by_year for the years covered by the selected period.
+    // vol_by_year keys are strings. For flat type filter, scale by type share from vol_by_type.
+    const natSlice = getFilteredNatTL();
+    const minY = natSlice.length ? parseInt(natSlice[0].m) : 0;
+    const maxY = natSlice.length ? parseInt(natSlice[natSlice.length - 1].m) : 9999;
+    const blocks = state.blocksByTown[id] || [];
+    let volInPeriod = 0;
+    for (const b of blocks) {
+      if (!b.vol_by_year) continue;
+      let bVol = 0;
+      for (let y = minY; y <= maxY; y++) bVol += (b.vol_by_year[String(y)] || 0);
+      if (ft !== "ALL" && b.vol_by_type) {
+        const ftVol = b.vol_by_type[ft] || 0;
+        const totalBVol = Object.values(b.vol_by_type).reduce((s, v) => s + v, 0);
+        bVol = totalBVol > 0 ? Math.round(bVol * ftVol / totalBVol) : 0;
+      }
+      volInPeriod += bVol;
+    }
+    if (!volInPeriod) volInPeriod = s.vol;
 
     // $/sqm: compute from filtered timeline median + floor area
     // When a specific flat type is selected, use its floor area directly.
