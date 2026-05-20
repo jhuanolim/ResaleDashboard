@@ -2837,7 +2837,7 @@ function selectCompareTown(id) {
    TRENDS VIEW
    ══════════════════════════════════════════════════════════════════════════ */
 const OVERLAY_COLORS = ["#e05c5c", "#f5a623", "#4ecb71", "#9b72d6", "#5bc8f5"];
-const trendsState = { period: "all", overlayTowns: new Set(), sortBy: "price", sortDir: 1, flatType: "ALL", _typeExpanded: false, _refMedian: null };
+const trendsState = { period: "all", overlayTowns: new Set(), sortBy: "price", sortDir: 1, flatType: "ALL", _typeExpanded: false, _refMedian: null, lcdMin: null, lcdMax: null };
 
 function overlayColor(id) {
   const idx = [...trendsState.overlayTowns].indexOf(id);
@@ -2856,6 +2856,55 @@ function getTrendsTownTL(id) {
   return ((DB.town_type_timelines || {})[id] || {})[ft] || [];
 }
 
+// Returns blocks (optionally for one town) filtered by LCD range in trendsState.
+// When lcdMin/lcdMax are null the filter is inactive and all blocks are returned.
+function getLcdFilteredBlocks(townId = null) {
+  const { lcdMin, lcdMax } = trendsState;
+  const noFilter = lcdMin == null && lcdMax == null;
+  const source = townId
+    ? (state.blocksByTown[townId] || [])
+    : Object.values(state.blocksByTown).flat();
+  if (noFilter) return source;
+  return source.filter(b => {
+    const lcd = b.lcd;
+    if (lcd == null) return false;
+    if (lcdMin != null && lcd < lcdMin) return false;
+    if (lcdMax != null && lcd > lcdMax) return false;
+    return true;
+  });
+}
+
+// Vol-weighted median of block medians for a set of blocks, restricted to a year range.
+function lcdBlocksMedian(blocks, minY, maxY) {
+  let sumWt = 0, sumWtMed = 0;
+  for (const b of blocks) {
+    if (!b.med || !b.vol_by_year) continue;
+    let bVol = 0;
+    for (let y = minY; y <= maxY; y++) bVol += (b.vol_by_year[String(y)] || 0);
+    if (!bVol) continue;
+    sumWtMed += b.med * bVol;
+    sumWt    += bVol;
+  }
+  return sumWt > 0 ? sumWtMed / sumWt : null;
+}
+
+// Total vol for a set of blocks in a year range, optionally filtered by flat type.
+function lcdBlocksVol(blocks, minY, maxY, ft) {
+  let total = 0;
+  for (const b of blocks) {
+    if (!b.vol_by_year) continue;
+    let bVol = 0;
+    for (let y = minY; y <= maxY; y++) bVol += (b.vol_by_year[String(y)] || 0);
+    if (ft && ft !== "ALL" && b.vol_by_type) {
+      const ftVol   = b.vol_by_type[ft] || 0;
+      const totTyp  = Object.values(b.vol_by_type).reduce((s, v) => s + v, 0);
+      bVol = totTyp > 0 ? Math.round(bVol * ftVol / totTyp) : 0;
+    }
+    total += bVol;
+  }
+  return total;
+}
+
 function getFilteredTownTL(id) {
   const full = getTrendsTownTL(id).filter(t => t.med != null);
   const p = trendsState.period;
@@ -2872,41 +2921,40 @@ const HDB_FLOOR_AREA = {
 
 function buildTownMovers() {
   const ft = trendsState.flatType;
+  const natSlice = getFilteredNatTL();
+  const minY = natSlice.length ? parseInt(natSlice[0].m) : 0;
+  const maxY = natSlice.length ? parseInt(natSlice[natSlice.length - 1].m) : 9999;
+  const lcdActive = trendsState.lcdMin != null || trendsState.lcdMax != null;
+
   return DB.towns.map(id => {
     const s  = DB.town_summaries[id];
-    const tl = getFilteredTownTL(id); // already period+type filtered
-    if (!s || tl.length < 2) return null;
-    const now  = tl[tl.length-1].med;
-    const prev = tl[0].med;
-    const medianVal = now || s.median;
+    if (!s) return null;
 
-    // Vol: sum block vol_by_year for the years covered by the selected period.
-    // vol_by_year keys are strings. For flat type filter, scale by type share from vol_by_type.
-    const natSlice = getFilteredNatTL();
-    const minY = natSlice.length ? parseInt(natSlice[0].m) : 0;
-    const maxY = natSlice.length ? parseInt(natSlice[natSlice.length - 1].m) : 9999;
-    const blocks = state.blocksByTown[id] || [];
-    let volInPeriod = 0;
-    for (const b of blocks) {
-      if (!b.vol_by_year) continue;
-      let bVol = 0;
-      for (let y = minY; y <= maxY; y++) bVol += (b.vol_by_year[String(y)] || 0);
-      if (ft !== "ALL" && b.vol_by_type) {
-        const ftVol = b.vol_by_type[ft] || 0;
-        const totalBVol = Object.values(b.vol_by_type).reduce((s, v) => s + v, 0);
-        bVol = totalBVol > 0 ? Math.round(bVol * ftVol / totalBVol) : 0;
-      }
-      volInPeriod += bVol;
+    // LCD-filtered blocks for this town
+    const filtBlocks = getLcdFilteredBlocks(id);
+    if (!filtBlocks.length) return null;
+
+    // Median: vol-weighted block median within period years
+    // When LCD filter inactive, fall back to town timeline for accuracy
+    let medianVal, dpct;
+    if (lcdActive) {
+      const medNow  = lcdBlocksMedian(filtBlocks, maxY, maxY) || lcdBlocksMedian(filtBlocks, minY, maxY);
+      const medPrev = lcdBlocksMedian(filtBlocks, minY, minY) || medNow;
+      medianVal = medNow || s.median;
+      dpct = medPrev > 0 ? (medNow - medPrev) / medPrev * 100 : 0;
+    } else {
+      const tl = getFilteredTownTL(id);
+      if (tl.length < 2) return null;
+      const now  = tl[tl.length-1].med;
+      const prev = tl[0].med;
+      medianVal = now || s.median;
+      dpct = prev > 0 ? (now - prev) / prev * 100 : 0;
     }
-    if (!volInPeriod) volInPeriod = s.vol;
 
-    // $/sqm: compute from filtered timeline median + floor area
-    // When a specific flat type is selected, use its floor area directly.
-    // When ALL, derive weighted average floor area from type_mix.
-    const periodMed = (() => {
-      const prices = tl.map(d => d.med).filter(Boolean).sort((a, b) => a - b);
-      return prices.length ? prices[Math.floor(prices.length / 2)] : null;
-    })();
+    // Vol: sum block vol_by_year for period years, scaled by flat type share
+    const volInPeriod = lcdBlocksVol(filtBlocks, minY, maxY, ft) || s.vol;
+
+    // $/sqm from period median + floor area
     const floorArea = (() => {
       if (ft !== "ALL") return HDB_FLOOR_AREA[ft] || null;
       const mix = s.type_mix || {};
@@ -2916,14 +2964,13 @@ function buildTownMovers() {
         weightedArea += pct * area;
         totalPct += pct;
       }
-      return totalPct > 0 ? weightedArea / totalPct : 93; // default to 4-room
+      return totalPct > 0 ? weightedArea / totalPct : 93;
     })();
-    const ppsqm = (periodMed && floorArea)
-      ? Math.round(periodMed * 1000 / floorArea)
+    const ppsqm = (medianVal && floorArea)
+      ? Math.round(medianVal * 1000 / floorArea)
       : s.ppsqm;
 
-    return { id, name: s.name, region: s.region, median: medianVal, ppsqm,
-             dpct: prev > 0 ? (now - prev) / prev * 100 : 0, vol: volInPeriod };
+    return { id, name: s.name, region: s.region, median: medianVal, ppsqm, dpct, vol: volInPeriod };
   }).filter(Boolean);
 }
 
@@ -2936,15 +2983,29 @@ function renderTrends() {
   if (!validNat.length) return;
   const latest  = validNat[validNat.length - 1];
   const first   = validNat[0];
-  const totalVol = validNat.reduce((s, d) => s + (d.vol || 0), 0);
-
   const p = trendsState.period;
   const ft = trendsState.flatType;
+  const lcdActive = trendsState.lcdMin != null || trendsState.lcdMax != null;
+  const lcdLabel  = lcdActive
+    ? `LCD ${trendsState.lcdMin ?? "any"}–${trendsState.lcdMax ?? "any"}`
+    : null;
+
+  // When LCD filter active, derive KPI numbers from blocks instead of national timeline
+  const natSliceForLcd = getFilteredNatTL();
+  const minY = natSliceForLcd.length ? parseInt(natSliceForLcd[0].m) : 0;
+  const maxY = natSliceForLcd.length ? parseInt(natSliceForLcd[natSliceForLcd.length-1].m) : 9999;
+  const allLcdBlocks = lcdActive ? getLcdFilteredBlocks() : null;
+
+  // Override median and vol from lcd-filtered blocks when filter is active
+  const lcdMedian = lcdActive ? lcdBlocksMedian(allLcdBlocks, minY, maxY) : null;
+  const lcdVol    = lcdActive ? lcdBlocksVol(allLcdBlocks, minY, maxY, ft) : null;
+  const totalVol  = lcdActive ? (lcdVol || 0) : validNat.reduce((s, d) => s + (d.vol || 0), 0);
   const periodLabel = p === "1y" ? "1Y" : p === "3y" ? "3Y" : p === "5y" ? "5Y" : "All-time";
   const periodLen = validNat.length; // months in current window
 
-  // Period median = median of all monthly medians in the window (not just latest month)
+  // Period median: use lcd-filtered block median when filter active, else timeline median
   const periodMedianNat = (() => {
+    if (lcdActive && lcdMedian) return lcdMedian;
     const prices = validNat.map(d => d.med).sort((a, b) => a - b);
     return prices[Math.floor(prices.length / 2)];
   })();
@@ -3050,10 +3111,33 @@ function renderTrends() {
   const trendsView = document.querySelector('[data-view="trends"]');
   let headEl = trendsView?.querySelector(".trends-head");
   if (headEl) {
-    headEl.innerHTML = `<div style="display:flex;align-items:baseline;gap:14px">
-      <h2 class="compare-head-title">Trends</h2>
-      <span class="compare-head-sub">National market, ${fmtMonth(first.m)} — ${fmtMonth(latest.m)}</span>
+    const lcdMin = trendsState.lcdMin ?? 1966;
+    const lcdMax = trendsState.lcdMax ?? 2022;
+    headEl.innerHTML = `<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:baseline;gap:14px">
+        <h2 class="compare-head-title">Trends</h2>
+        <span class="compare-head-sub">National market, ${fmtMonth(first.m)} — ${fmtMonth(latest.m)}</span>
+      </div>
+      <div class="lcd-slider-wrap" id="lcdSliderWrap">
+        <span class="lcd-slider-label">Lease commencement</span>
+        <div class="lcd-slider-track-wrap">
+          <div class="lcd-slider-track" id="lcdTrack"></div>
+          <input type="range" class="lcd-range-input" id="lcdRangeMin"
+            min="1966" max="2022" step="1" value="${trendsState.lcdMin ?? 1966}"
+            oninput="lcdRangeInput()" onchange="lcdCommit()">
+          <input type="range" class="lcd-range-input" id="lcdRangeMax"
+            min="1966" max="2022" step="1" value="${trendsState.lcdMax ?? 2022}"
+            oninput="lcdRangeInput()" onchange="lcdCommit()">
+        </div>
+        <div class="lcd-slider-values">
+          <span id="lcdValMin">${trendsState.lcdMin != null ? trendsState.lcdMin : "All"}</span>
+          <span>–</span>
+          <span id="lcdValMax">${trendsState.lcdMax != null ? trendsState.lcdMax : "All"}</span>
+        </div>
+        ${lcdActive ? `<button class="lcd-reset-btn" onclick="lcdReset()">Reset</button>` : ""}
+      </div>
     </div>`;
+    lcdTrackUpdate();
   }
 
   container.innerHTML = `<div class="trends-grid">
@@ -3073,7 +3157,7 @@ function renderTrends() {
               ${vsEqPeriodChg >= 0 ? "▲" : "▼"} ${Math.abs(vsEqPeriodChg).toFixed(1)}% vs prior ${periodLabel === "All-time" ? "period" : periodLabel}
             </span>` : ""}
           </div>
-          <div class="kpi-sub">Period median · ${fmtMonth(first.m)}–${fmtMonth(latest.m)}</div>
+          <div class="kpi-sub">Period median · ${fmtMonth(first.m)}–${fmtMonth(latest.m)}${lcdLabel ? ` · ${lcdLabel}` : ""}</div>
         </div>
       </div>
 
@@ -3149,6 +3233,7 @@ function renderTrends() {
           </div>
         </div>
       </div>
+      ${lcdActive ? `<div class="lcd-filter-banner">LCD filter active: ${lcdLabel} · Chart shows all buildings (no monthly LCD breakdown available)</div>` : ""}
       <div class="trends-chart-wrap" id="trendsChartWrap">${buildComboChart(800, periodMedianNat)}</div>
       <div class="trends-overlay-section">
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:7px">
@@ -3473,35 +3558,43 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
 
 let _chartResizeObs = null;
 
-// Set the chart wrap height to match the side column, then render the SVG into it.
-// Uses bounding rects to measure precisely how much vertical space in the card is
-// consumed by padding + sibling elements (header, overlay section). No estimates.
-// No feedback loop: side col height is driven by its 4 stacked cards, not the chart.
+// Align chart card bottom to side column bottom.
+// Strategy: collapse the wrap to 0 so the chart card shrinks to its header-only
+// natural height. Read the side col's intrinsic height (now unaffected by a tall
+// chart card). Compute targetH = sideH - nonWrapH. Set wrap height and render.
 function syncChartHeight() {
   const wrap = document.getElementById("trendsChartWrap");
   const side = document.getElementById("trendsSideCol");
   if (!wrap || !side) return;
 
+  // Collapse wrap so the chart card no longer inflates the grid row
+  wrap.style.height = "0px";
+  wrap.style.overflow = "hidden";
+
+  // Force layout synchronously so side.offsetHeight reflects intrinsic content only
+  void side.offsetHeight;
+
   const sideH = side.offsetHeight;
   const card  = wrap.closest(".trends-chart-card");
 
+  // Space consumed by card padding + sibling elements (header, overlay section)
   let nonWrapH = 0;
   if (card) {
     const cs = getComputedStyle(card);
     nonWrapH += parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    // measure each sibling directly — avoids any hardcoded gap values
     for (const child of card.children) {
       if (child === wrap) continue;
-      const r = child.getBoundingClientRect();
       const childCs = getComputedStyle(child);
-      nonWrapH += r.height
-        + parseFloat(childCs.marginTop || 0)
+      nonWrapH += child.offsetHeight
+        + parseFloat(childCs.marginTop  || 0)
         + parseFloat(childCs.marginBottom || 0);
     }
   }
 
   const targetH = Math.max(sideH - nonWrapH, 120);
   wrap.style.height = targetH + "px";
+  wrap.style.overflow = "hidden";
+
   const w = wrap.clientWidth;
   if (w > 10) {
     wrap.innerHTML = buildComboChart(w, trendsState._refMedian, targetH);
@@ -3596,6 +3689,57 @@ window.setTownPeriod = (p) => {
 
 window.setTrendsPeriod = (p) => {
   trendsState.period = p.toLowerCase();
+  renderTrends();
+};
+
+window.setTrendsLcd = (min, max) => {
+  trendsState.lcdMin = min;
+  trendsState.lcdMax = max;
+  renderTrends();
+};
+
+// Dual-handle range slider for LCD filter.
+// lcdRangeInput fires on every pixel drag — only updates display, no full re-render.
+// lcdCommit fires on pointerup — commits state and re-renders.
+window.lcdRangeInput = function() {
+  const minEl = document.getElementById("lcdRangeMin");
+  const maxEl = document.getElementById("lcdRangeMax");
+  if (!minEl || !maxEl) return;
+  let lo = parseInt(minEl.value), hi = parseInt(maxEl.value);
+  if (lo > hi) { [lo, hi] = [hi, lo]; minEl.value = lo; maxEl.value = hi; }
+  const isAll = lo <= 1966 && hi >= 2022;
+  document.getElementById("lcdValMin").textContent = isAll ? "All" : lo;
+  document.getElementById("lcdValMax").textContent = isAll ? "All" : hi;
+  lcdTrackUpdate();
+};
+
+window.lcdTrackUpdate = function() {
+  const minEl = document.getElementById("lcdRangeMin");
+  const maxEl = document.getElementById("lcdRangeMax");
+  const track = document.getElementById("lcdTrack");
+  if (!minEl || !maxEl || !track) return;
+  const lo = parseInt(minEl.value), hi = parseInt(maxEl.value);
+  const min = parseInt(minEl.min), max = parseInt(minEl.max);
+  const pctLo = (lo - min) / (max - min) * 100;
+  const pctHi = (hi - min) / (max - min) * 100;
+  track.style.left  = pctLo + "%";
+  track.style.right = (100 - pctHi) + "%";
+};
+
+window.lcdCommit = function() {
+  const minEl = document.getElementById("lcdRangeMin");
+  const maxEl = document.getElementById("lcdRangeMax");
+  if (!minEl || !maxEl) return;
+  const lo = parseInt(minEl.value), hi = parseInt(maxEl.value);
+  const isAll = lo <= 1966 && hi >= 2022;
+  trendsState.lcdMin = isAll ? null : lo;
+  trendsState.lcdMax = isAll ? null : hi;
+  renderTrends();
+};
+
+window.lcdReset = function() {
+  trendsState.lcdMin = null;
+  trendsState.lcdMax = null;
   renderTrends();
 };
 

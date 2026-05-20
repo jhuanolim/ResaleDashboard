@@ -1893,6 +1893,63 @@ body {
   flex: 0 0 auto; padding: 20px 24px 16px; background: var(--bg-1);
   border-bottom: 1px solid var(--line);
 }
+
+/* LCD commencement year dual-handle range slider */
+.lcd-slider-wrap {
+  display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;
+}
+.lcd-slider-label {
+  font-size: 10px; font-weight: 600; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: .07em; white-space: nowrap;
+}
+.lcd-slider-track-wrap {
+  position: relative; width: 180px; height: 20px;
+  display: flex; align-items: center;
+}
+.lcd-slider-track-wrap::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+  height: 3px; background: var(--surface-3); border-radius: 2px; z-index: 0;
+}
+.lcd-slider-track {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  height: 3px; background: var(--accent); border-radius: 2px; z-index: 1;
+  pointer-events: none;
+}
+.lcd-range-input {
+  position: absolute; width: 100%; height: 100%;
+  -webkit-appearance: none; appearance: none;
+  background: transparent; pointer-events: none; z-index: 2;
+  margin: 0; padding: 0;
+}
+.lcd-range-input::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg);
+  cursor: pointer; pointer-events: all; box-shadow: 0 0 0 1px var(--accent);
+  transition: transform .1s;
+}
+.lcd-range-input::-webkit-slider-thumb:hover { transform: scale(1.2); }
+.lcd-range-input::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg);
+  cursor: pointer; pointer-events: all;
+}
+.lcd-slider-values {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 12px; font-weight: 700; color: var(--ink); font-family: var(--font-mono, monospace);
+  white-space: nowrap; min-width: 90px;
+}
+.lcd-reset-btn {
+  font-size: 10px; font-weight: 600; color: var(--ink-3);
+  background: none; border: 1px solid var(--line); border-radius: 4px;
+  padding: 2px 7px; cursor: pointer; white-space: nowrap;
+}
+.lcd-reset-btn:hover { color: var(--ink); border-color: var(--line-2); }
+.lcd-filter-banner {
+  font-size: 11px; color: var(--amber); background: rgba(224,184,94,0.08);
+  border: 1px solid rgba(224,184,94,0.25); border-radius: 6px;
+  padding: 5px 10px; margin-bottom: 10px;
+}
 .trends-body {
   flex: 1; overflow-y: auto; padding: 24px;
 }
