@@ -3511,19 +3511,25 @@ function syncChartHeight() {
 
 function attachChartResizeObserver() {
   const wrap = document.getElementById("trendsChartWrap");
-  const side = document.getElementById("trendsSideCol");
   if (!wrap) return;
   if (_chartResizeObs) _chartResizeObs.disconnect();
-  let lastW = 0, lastH = 0;
-  _chartResizeObs = new ResizeObserver(() => {
-    const w = wrap.clientWidth;
-    const h = side ? side.offsetHeight : 0;
-    if (w < 10 || (w === lastW && h === lastH)) return;
-    lastW = w; lastH = h;
+  let lastW = 0;
+  // Observe only the wrap, and only react to WIDTH changes.
+  // Height is set by JS (syncChartHeight), so a height-only change means we caused it —
+  // reacting to it would create a feedback loop. Width changes come from window resize.
+  _chartResizeObs = new ResizeObserver(entries => {
+    const w = Math.floor(entries[0].contentRect.width);
+    if (w < 10 || w === lastW) return;
+    lastW = w;
     syncChartHeight();
   });
   _chartResizeObs.observe(wrap);
-  if (side) _chartResizeObs.observe(side);
+  // Window resize also changes side column height (font/zoom changes etc.)
+  // Handle via window resize event — this fires once per resize, not in a loop.
+  if (!wrap._winResizeAttached) {
+    wrap._winResizeAttached = true;
+    window.addEventListener("resize", () => syncChartHeight());
+  }
 }
 
 function attachChartListeners() {
