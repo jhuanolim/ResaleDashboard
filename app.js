@@ -2901,32 +2901,73 @@ function renderTrends() {
   const latest  = validNat[validNat.length - 1];
   const first   = validNat[0];
   const periodChg = first.med > 0 ? (latest.med - first.med) / first.med * 100 : 0;
-  const lastVol = latest.vol || 0;
-  const prevVol = validNat.length >= 2 ? validNat[0].vol || 0 : 0;
-  const volChg  = prevVol ? ((lastVol - prevVol) / prevVol * 100) : 0;
-  const peakPrice = Math.max(...validNat.map(d => d.med));
-  const peakMonth = validNat.find(d => d.med === peakPrice)?.m;
-
-  // Previous equivalent period median for the delta badge on the headline KPI
-  const prevPeriodMedian = (() => {
-    const fullNat = (DB.national_timeline || []).filter(d => d.med != null);
-    if (!fullNat.length || validNat.length < 2) return null;
-    const periodLen = validNat.length;
-    // Find where the current period starts in the full timeline
-    const startIdx = fullNat.findIndex(d => d.m === first.m);
-    if (startIdx < periodLen) return null; // not enough history
-    const prevSlice = fullNat.slice(startIdx - periodLen, startIdx);
-    const prices = prevSlice.map(d => d.med).sort((a, b) => a - b);
-    return prices[Math.floor(prices.length / 2)];
-  })();
-  const vsEqPeriodChg = prevPeriodMedian
-    ? (latest.med - prevPeriodMedian) / prevPeriodMedian * 100
-    : null;
+  const totalVol = validNat.reduce((s, d) => s + (d.vol || 0), 0);
 
   const p = trendsState.period;
   const periodLabel = p === "1y" ? "1Y" : p === "3y" ? "3Y" : p === "5y" ? "5Y" : "All-time";
-  const periodChgLabel = `${periodLabel} change`;
-  const volLabel = p === "1y" ? "1Y volume" : p === "3y" ? "3Y volume" : p === "5y" ? "5Y volume" : "All-time vol";
+  const periodLen = validNat.length; // months in current window
+
+  // --- KPI 1: Median resale price vs prior equivalent period ---
+  // Compare latest.med against the median of the prior same-length window
+  const prevPeriodData = (() => {
+    const fullNat = (DB.national_timeline || []).filter(d => d.med != null);
+    if (!fullNat.length || periodLen < 2) return null;
+    const startIdx = fullNat.findIndex(d => d.m === first.m);
+    if (startIdx < periodLen) return null;
+    const prevSlice = fullNat.slice(startIdx - periodLen, startIdx);
+    const prices = prevSlice.map(d => d.med).sort((a, b) => a - b);
+    const prevMedian = prices[Math.floor(prices.length / 2)];
+    const prevFirst = prevSlice[0], prevLast = prevSlice[prevSlice.length - 1];
+    return { median: prevMedian, from: prevFirst?.m, to: prevLast?.m };
+  })();
+  const vsEqPeriodChg = prevPeriodData
+    ? (latest.med - prevPeriodData.median) / prevPeriodData.median * 100
+    : null;
+  const prevPeriodTooltip = prevPeriodData
+    ? `Comparing ${fmtMonth(latest.m)} (${fmtKs(latest.med)}) vs median of ${fmtMonth(prevPeriodData.from)}–${fmtMonth(prevPeriodData.to)} (${fmtKs(prevPeriodData.median)})`
+    : "Insufficient history for prior period comparison";
+
+  // --- KPI 2: Price momentum tag ---
+  const momentumTag = (() => {
+    if (Math.abs(periodChg) < 1)   return { label: "Stable",  color: "var(--ink-3)" };
+    if (periodChg >= 5)             return { label: "Heating", color: "var(--red)" };
+    if (periodChg >= 1)             return { label: "Rising",  color: "var(--green)" };
+    if (periodChg <= -5)            return { label: "Cooling", color: "var(--accent)" };
+    return                                 { label: "Easing",  color: "var(--amber)" };
+  })();
+  const momentumArrow = periodChg >= 0 ? "↑" : "↓";
+  const momentumDir   = periodChg >= 0 ? "up" : "down";
+
+  // --- KPI 3: Transactions + YoY volume comparison ---
+  // Compare total vol in current period vs same-length window 12 months earlier
+  const yoyVolChg = (() => {
+    const fullNat = (DB.national_timeline || []).filter(d => d.vol != null);
+    if (!fullNat.length || periodLen < 2) return null;
+    const startIdx = fullNat.findIndex(d => d.m === first.m);
+    if (startIdx < 12) return null; // need at least 12 months of history
+    // Shift the window back exactly 12 months
+    const shiftStart = Math.max(0, startIdx - 12);
+    const shiftEnd   = shiftStart + periodLen;
+    if (shiftEnd > fullNat.length) return null;
+    const prevVolSlice = fullNat.slice(shiftStart, shiftEnd);
+    const prevTotal = prevVolSlice.reduce((s, d) => s + (d.vol || 0), 0);
+    return prevTotal > 0 ? (totalVol - prevTotal) / prevTotal * 100 : null;
+  })();
+
+  // --- KPI 4: Median $/sqm (volume-weighted across towns) vs prior period ---
+  const natPpsqm = (() => {
+    const towns = Object.values(DB.town_summaries || {}).filter(t => t.ppsqm > 0 && t.vol_12m > 0);
+    if (!towns.length) return null;
+    const totalW = towns.reduce((s, t) => s + t.vol_12m, 0);
+    return Math.round(towns.reduce((s, t) => s + t.ppsqm * t.vol_12m, 0) / totalW);
+  })();
+  // Prior period ppsqm: approximate using the price ratio (no monthly ppsqm data)
+  const prevPpsqm = (natPpsqm != null && prevPeriodData)
+    ? Math.round(natPpsqm * (prevPeriodData.median / latest.med))
+    : null;
+  const ppsqmChg = (natPpsqm != null && prevPpsqm)
+    ? (natPpsqm - prevPpsqm) / prevPpsqm * 100
+    : null;
 
   const movers = buildTownMovers();
   const topUp      = [...movers].sort((a,b) => b.dpct - a.dpct).slice(0, 5);
@@ -2956,37 +2997,60 @@ function renderTrends() {
 
     <!-- KPI strip -->
     <div class="trends-kpis">
+
+      <!-- KPI 1: Median resale price -->
       <div class="td-card">
         <div class="kpi">
           <div class="kpi-label">Median resale price</div>
-          <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px">
+          <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
             ${fmtKs(latest.med)}
-            ${vsEqPeriodChg != null ? `<span class="kpi-delta-badge${vsEqPeriodChg >= 0 ? " up" : " down"}">${vsEqPeriodChg >= 0 ? "▲" : "▼"} ${Math.abs(vsEqPeriodChg).toFixed(1)}%</span>` : ""}
+            ${vsEqPeriodChg != null ? `<span class="kpi-delta-badge${vsEqPeriodChg >= 0 ? " up" : " down"}"
+              title="${prevPeriodTooltip}"
+              style="cursor:help">
+              ${vsEqPeriodChg >= 0 ? "▲" : "▼"} ${Math.abs(vsEqPeriodChg).toFixed(1)}% vs prior ${periodLabel === "All-time" ? "period" : periodLabel}
+            </span>` : ""}
           </div>
-          <div class="kpi-sub">${fmtMonth(latest.m)} · vs prev ${periodLabel === "All-time" ? "period" : periodLabel}</div>
+          <div class="kpi-sub">${fmtMonth(latest.m)} · ${periodLabel} view</div>
         </div>
       </div>
+
+      <!-- KPI 2: Price momentum -->
       <div class="td-card">
         <div class="kpi">
-          <div class="kpi-label">${periodChgLabel}</div>
-          <div class="kpi-value" style="color:var(--accent)">${periodChg >= 0 ? "+" : ""}${periodChg.toFixed(1)}%</div>
-          <div class="kpi-sub">since ${fmtMonth(first.m)}</div>
+          <div class="kpi-label">Price momentum</div>
+          <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px">
+            <span style="color:${periodChg >= 0 ? "var(--green)" : "var(--red)"}">${momentumArrow} ${Math.abs(periodChg).toFixed(1)}%</span>
+            <span class="kpi-momentum-tag" style="color:${momentumTag.color};border-color:${momentumTag.color}">${momentumTag.label}</span>
+          </div>
+          <div class="kpi-sub">Prices ${momentumDir} ${Math.abs(periodChg).toFixed(1)}% · ${fmtMonth(first.m)} → ${fmtMonth(latest.m)}</div>
         </div>
       </div>
+
+      <!-- KPI 3: Transactions -->
       <div class="td-card">
         <div class="kpi">
-          <div class="kpi-label">${volLabel}</div>
-          <div class="kpi-value">${validNat.reduce((s,d) => s + (d.vol||0), 0).toLocaleString()}</div>
-          <div class="kpi-sub">${deltaPill(volChg)} vs period start</div>
+          <div class="kpi-label">Transactions</div>
+          <div class="kpi-value">${totalVol.toLocaleString()}</div>
+          <div class="kpi-sub">
+            ${yoyVolChg != null
+              ? `<span class="${yoyVolChg >= 0 ? "kpi-delta-badge up" : "kpi-delta-badge down"}" style="font-size:10px">${yoyVolChg >= 0 ? "▲" : "▼"} ${Math.abs(yoyVolChg).toFixed(1)}%</span> vs same period last year`
+              : `${periodLabel} total`}
+          </div>
         </div>
       </div>
+
+      <!-- KPI 4: Median $/sqm -->
       <div class="td-card">
         <div class="kpi">
-          <div class="kpi-label">Peak in period</div>
-          <div class="kpi-value">${fmtKs(peakPrice)}</div>
-          <div class="kpi-sub">${fmtMonth(peakMonth)}</div>
+          <div class="kpi-label">Median $/sqm</div>
+          <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px">
+            ${natPpsqm != null ? `$${natPpsqm.toLocaleString()}` : "—"}
+            ${ppsqmChg != null ? `<span class="kpi-delta-badge${ppsqmChg >= 0 ? " up" : " down"}">${ppsqmChg >= 0 ? "▲" : "▼"} ${Math.abs(ppsqmChg).toFixed(1)}%</span>` : ""}
+          </div>
+          <div class="kpi-sub">Volume-weighted · vs prior ${periodLabel === "All-time" ? "period" : periodLabel}</div>
         </div>
       </div>
+
     </div>
 
     <!-- Combo chart (7 cols) + Where prices moved most (5 cols) side by side -->
