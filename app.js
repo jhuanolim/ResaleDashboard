@@ -2900,31 +2900,38 @@ function renderTrends() {
   if (!validNat.length) return;
   const latest  = validNat[validNat.length - 1];
   const first   = validNat[0];
-  const periodChg = first.med > 0 ? (latest.med - first.med) / first.med * 100 : 0;
   const totalVol = validNat.reduce((s, d) => s + (d.vol || 0), 0);
 
   const p = trendsState.period;
+  const ft = trendsState.flatType;
   const periodLabel = p === "1y" ? "1Y" : p === "3y" ? "3Y" : p === "5y" ? "5Y" : "All-time";
   const periodLen = validNat.length; // months in current window
 
+  // Period median = median of all monthly medians in the window (not just latest month)
+  const periodMedianNat = (() => {
+    const prices = validNat.map(d => d.med).sort((a, b) => a - b);
+    return prices[Math.floor(prices.length / 2)];
+  })();
+  const periodChg = first.med > 0 ? (latest.med - first.med) / first.med * 100 : 0;
+
   // --- KPI 1: Median resale price vs prior equivalent period ---
-  // Compare latest.med against the median of the prior same-length window
+  // Use the type-filtered full timeline so it respects flat type selection
   const prevPeriodData = (() => {
-    const fullNat = (DB.national_timeline || []).filter(d => d.med != null);
-    if (!fullNat.length || periodLen < 2) return null;
-    const startIdx = fullNat.findIndex(d => d.m === first.m);
+    const fullTL = getTrendsNatTL().filter(d => d.med != null);
+    if (!fullTL.length || periodLen < 2) return null;
+    const startIdx = fullTL.findIndex(d => d.m === first.m);
     if (startIdx < periodLen) return null;
-    const prevSlice = fullNat.slice(startIdx - periodLen, startIdx);
+    const prevSlice = fullTL.slice(startIdx - periodLen, startIdx);
     const prices = prevSlice.map(d => d.med).sort((a, b) => a - b);
     const prevMedian = prices[Math.floor(prices.length / 2)];
     const prevFirst = prevSlice[0], prevLast = prevSlice[prevSlice.length - 1];
     return { median: prevMedian, from: prevFirst?.m, to: prevLast?.m };
   })();
   const vsEqPeriodChg = prevPeriodData
-    ? (latest.med - prevPeriodData.median) / prevPeriodData.median * 100
+    ? (periodMedianNat - prevPeriodData.median) / prevPeriodData.median * 100
     : null;
   const prevPeriodTooltip = prevPeriodData
-    ? `Comparing ${fmtMonth(latest.m)} (${fmtKs(latest.med)}) vs median of ${fmtMonth(prevPeriodData.from)}–${fmtMonth(prevPeriodData.to)} (${fmtKs(prevPeriodData.median)})`
+    ? `Period median ${fmtKs(periodMedianNat)} vs prior ${periodLabel} median ${fmtKs(prevPeriodData.median)} (${fmtMonth(prevPeriodData.from)}–${fmtMonth(prevPeriodData.to)})`
     : "Insufficient history for prior period comparison";
 
   // --- KPI 2: Price momentum tag ---
@@ -2940,32 +2947,55 @@ function renderTrends() {
 
   // --- KPI 3: Transactions + YoY volume comparison ---
   // Compare total vol in current period vs same-length window 12 months earlier
+  // Use the type-filtered full timeline so it respects flat type selection
   const yoyVolChg = (() => {
-    const fullNat = (DB.national_timeline || []).filter(d => d.vol != null);
-    if (!fullNat.length || periodLen < 2) return null;
-    const startIdx = fullNat.findIndex(d => d.m === first.m);
-    if (startIdx < 12) return null; // need at least 12 months of history
-    // Shift the window back exactly 12 months
+    const fullTL = getTrendsNatTL().filter(d => d.vol != null);
+    if (!fullTL.length || periodLen < 2) return null;
+    const startIdx = fullTL.findIndex(d => d.m === first.m);
+    if (startIdx < 12) return null;
     const shiftStart = Math.max(0, startIdx - 12);
     const shiftEnd   = shiftStart + periodLen;
-    if (shiftEnd > fullNat.length) return null;
-    const prevVolSlice = fullNat.slice(shiftStart, shiftEnd);
+    if (shiftEnd > fullTL.length) return null;
+    const prevVolSlice = fullTL.slice(shiftStart, shiftEnd);
     const prevTotal = prevVolSlice.reduce((s, d) => s + (d.vol || 0), 0);
     return prevTotal > 0 ? (totalVol - prevTotal) / prevTotal * 100 : null;
   })();
 
-  // --- KPI 4: Median $/sqm (volume-weighted across towns) vs prior period ---
-  const natPpsqm = (() => {
-    const towns = Object.values(DB.town_summaries || {}).filter(t => t.ppsqm > 0 && t.vol_12m > 0);
-    if (!towns.length) return null;
-    const totalW = towns.reduce((s, t) => s + t.vol_12m, 0);
-    return Math.round(towns.reduce((s, t) => s + t.ppsqm * t.vol_12m, 0) / totalW);
+  // --- KPI 4: Median $/sqm — computed from national_type_timelines + standard floor areas ---
+  // This is period-aware (uses the sliced window months) and flat-type-aware
+  const HDB_FLOOR_AREA = {
+    "1 ROOM": 35, "2 ROOM": 45, "3 ROOM": 68, "4 ROOM": 93,
+    "5 ROOM": 113, "EXECUTIVE": 140, "MULTI-GENERATION": 155
+  };
+  const periodMonthSet = new Set(validNat.map(d => d.m));
+  const computePpsqm = (monthSet) => {
+    const ntt = DB.national_type_timelines || {};
+    const typesToUse = ft === "ALL" ? Object.keys(HDB_FLOOR_AREA) : [ft];
+    let totalW = 0, weightedSum = 0;
+    for (const type of typesToUse) {
+      const area = HDB_FLOOR_AREA[type];
+      if (!area) continue;
+      const entries = (ntt[type] || []).filter(d => monthSet.has(d.m) && d.med != null && d.vol > 0);
+      for (const d of entries) {
+        const ppsqm = d.med * 1000 / area;
+        weightedSum += ppsqm * d.vol;
+        totalW += d.vol;
+      }
+    }
+    return totalW > 0 ? Math.round(weightedSum / totalW) : null;
+  };
+  const natPpsqm = computePpsqm(periodMonthSet);
+  // Prior period ppsqm: same calculation on the prior equivalent window
+  const prevPpsqm = (() => {
+    if (!prevPeriodData) return null;
+    const fullTL = getTrendsNatTL().filter(d => d.med != null);
+    const startIdx = fullTL.findIndex(d => d.m === first.m);
+    if (startIdx < periodLen) return null;
+    const prevSlice = fullTL.slice(startIdx - periodLen, startIdx);
+    const prevMonthSet = new Set(prevSlice.map(d => d.m));
+    return computePpsqm(prevMonthSet);
   })();
-  // Prior period ppsqm: approximate using the price ratio (no monthly ppsqm data)
-  const prevPpsqm = (natPpsqm != null && prevPeriodData)
-    ? Math.round(natPpsqm * (prevPeriodData.median / latest.med))
-    : null;
-  const ppsqmChg = (natPpsqm != null && prevPpsqm)
+  const ppsqmChg = (natPpsqm != null && prevPpsqm != null)
     ? (natPpsqm - prevPpsqm) / prevPpsqm * 100
     : null;
 
@@ -3003,14 +3033,14 @@ function renderTrends() {
         <div class="kpi">
           <div class="kpi-label">Median resale price</div>
           <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
-            ${fmtKs(latest.med)}
+            ${fmtKs(periodMedianNat)}
             ${vsEqPeriodChg != null ? `<span class="kpi-delta-badge${vsEqPeriodChg >= 0 ? " up" : " down"}"
               title="${prevPeriodTooltip}"
               style="cursor:help">
               ${vsEqPeriodChg >= 0 ? "▲" : "▼"} ${Math.abs(vsEqPeriodChg).toFixed(1)}% vs prior ${periodLabel === "All-time" ? "period" : periodLabel}
             </span>` : ""}
           </div>
-          <div class="kpi-sub">${fmtMonth(latest.m)} · ${periodLabel} view</div>
+          <div class="kpi-sub">Period median · ${fmtMonth(first.m)}–${fmtMonth(latest.m)}</div>
         </div>
       </div>
 
