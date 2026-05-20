@@ -3254,7 +3254,8 @@ function renderTrends() {
   requestAnimationFrame(() => {
     const chartWrap = document.getElementById("trendsChartWrap");
     if (chartWrap && chartWrap.clientWidth > 10) {
-      chartWrap.innerHTML = buildComboChart(chartWrap.clientWidth, periodMedianNat);
+      const h = chartWrap.clientHeight > 40 ? chartWrap.clientHeight : null;
+      chartWrap.innerHTML = buildComboChart(chartWrap.clientWidth, periodMedianNat, h);
     }
     attachChartListeners();
     attachChartResizeObserver();
@@ -3289,12 +3290,12 @@ function getFilteredNatTL() {
   return tl;
 }
 
-function buildComboChart(W = 800, refMedian = null) {
+function buildComboChart(W = 800, refMedian = null, H = null) {
   const tl    = getFilteredNatTL();
   const valid = tl.filter(d => d.med != null || d.vol != null);
   if (valid.length < 2) return "";
 
-  const H = Math.round(W * (280 / 800));
+  if (H == null) H = Math.round(W * (280 / 800));
   // right pad scales: vol-axis ticks (30px) + gap + town label — shrinks on narrow screens
   const pad = { t: 14, b: 30, l: 56, r: Math.min(100, Math.round(W * 0.13)) };
 
@@ -3435,7 +3436,7 @@ function buildComboChart(W = 800, refMedian = null) {
   // ── Axis labels ──
   const leftAxisLbl = `<text x="10" y="${(H/2).toFixed(1)}" font-size="9" fill="var(--ink-3)" font-family="Inter,sans-serif" text-anchor="middle" transform="rotate(-90,10,${(H/2).toFixed(1)})">Median $k</text>`;
 
-  return `<svg id="trendsChart" width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"
+  return `<svg id="trendsChart" width="100%" height="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
       style="display:block;cursor:crosshair;overflow:visible"
       data-min="${minP.toFixed(2)}" data-max="${maxP.toFixed(2)}"
       data-maxvol="${maxVol}"
@@ -3480,12 +3481,15 @@ function attachChartResizeObserver() {
   const wrap = document.getElementById("trendsChartWrap");
   if (!wrap) return;
   if (_chartResizeObs) _chartResizeObs.disconnect();
-  let lastW = 0;
+  let lastW = 0, lastH = 0;
   _chartResizeObs = new ResizeObserver(entries => {
-    const w = Math.floor(entries[0].contentRect.width);
-    if (w < 10 || w === lastW) return;
-    lastW = w;
-    wrap.innerHTML = buildComboChart(w, trendsState._refMedian);
+    const { width, height } = entries[0].contentRect;
+    const w = Math.floor(width);
+    const h = Math.floor(height);
+    if (w < 10 || (w === lastW && h === lastH)) return;
+    lastW = w; lastH = h;
+    const chartH = h > 40 ? h : null;
+    wrap.innerHTML = buildComboChart(w, trendsState._refMedian, chartH);
     attachChartListeners();
   });
   _chartResizeObs.observe(wrap);
