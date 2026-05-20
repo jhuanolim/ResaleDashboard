@@ -2837,7 +2837,7 @@ function selectCompareTown(id) {
    TRENDS VIEW
    ══════════════════════════════════════════════════════════════════════════ */
 const OVERLAY_COLORS = ["#e05c5c", "#f5a623", "#4ecb71", "#9b72d6", "#5bc8f5"];
-const trendsState = { period: "all", overlayTowns: new Set(), sortBy: "price", sortDir: 1, flatType: "ALL" };
+const trendsState = { period: "all", overlayTowns: new Set(), sortBy: "price", sortDir: 1, flatType: "ALL", _typeExpanded: false, _refMedian: null };
 
 function overlayColor(id) {
   const idx = [...trendsState.overlayTowns].indexOf(id);
@@ -2912,6 +2912,7 @@ function renderTrends() {
     const prices = validNat.map(d => d.med).sort((a, b) => a - b);
     return prices[Math.floor(prices.length / 2)];
   })();
+  trendsState._refMedian = periodMedianNat;
   const periodChg = first.med > 0 ? (latest.med - first.med) / first.med * 100 : 0;
 
   // --- KPI 1: Median resale price vs prior equivalent period ---
@@ -3096,14 +3097,27 @@ function renderTrends() {
               `<button class="trends-period-btn${trendsState.period===p.toLowerCase()||trendsState.period===p?' active':''}" onclick="setTrendsPeriod('${p}')">${p}</button>`
             ).join("")}
           </div>
-          <div class="trends-type-btns">
-            ${flatTypeOptions.map(ft =>
-              `<button class="trends-type-btn${trendsState.flatType===ft?' active':''}" onclick="setTrendsType('${ft}')">${ft==="ALL"?"All types":ft.replace(" ROOM","Rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MultiGen")}</button>`
-            ).join("")}
+          <div class="trends-type-btns" id="trendsTypeBtns">
+            ${(() => {
+              const RARE = new Set(["1 ROOM", "MULTI-GENERATION"]);
+              const common = flatTypeOptions.filter(ft => !RARE.has(ft));
+              const rare   = flatTypeOptions.filter(ft => RARE.has(ft));
+              const rareActive = rare.some(ft => trendsState.flatType === ft);
+              const expanded = rareActive || trendsState._typeExpanded;
+              const label = ft => ft === "ALL" ? "All types" : ft.replace(" ROOM","Rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MultiGen");
+              return common.map(ft =>
+                `<button class="trends-type-btn${trendsState.flatType===ft?' active':''}" onclick="setTrendsType('${ft}')">${label(ft)}</button>`
+              ).join("") + (expanded
+                ? rare.map(ft =>
+                    `<button class="trends-type-btn${trendsState.flatType===ft?' active':''}" onclick="setTrendsType('${ft}')">${label(ft)}</button>`
+                  ).join("") + `<button class="trends-type-btn trends-type-more" onclick="trendsState._typeExpanded=false;renderTrends()">− Less</button>`
+                : `<button class="trends-type-btn trends-type-more" onclick="trendsState._typeExpanded=true;renderTrends()">+ More</button>`
+              );
+            })()}
           </div>
         </div>
       </div>
-      <div class="trends-chart-wrap" id="trendsChartWrap">${buildComboChart()}</div>
+      <div class="trends-chart-wrap" id="trendsChartWrap">${buildComboChart(800, periodMedianNat)}</div>
       <div class="trends-overlay-section">
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:7px">
           <div class="trends-overlay-label" style="margin:0">Overlay towns</div>
@@ -3160,7 +3174,7 @@ function renderTrends() {
           </div>`).join("")}
       </div>
       <div class="td-card">
-        <div class="td-card-title">Most active <span class="td-card-note">${periodLabel} transactions</span></div>
+        <div class="td-card-title">Most transactions <span class="td-card-note">${periodLabel} total</span></div>
         ${topActive.map((t,i) => `
           <div class="pulse-row" onclick="openTownDashboard('${t.id}')" style="cursor:pointer">
             <span class="pulse-row-rank">${i+1}</span>
@@ -3189,7 +3203,7 @@ function renderTrends() {
         <span class="trends-section-title-txt">All towns</span>
       </div>
       <div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${[["median","Most expensive"],["cheap","Cheapest"],["yoy","Biggest movers"],["vol","Most active"]].map(([k,lbl]) =>
+        ${[["median","Most expensive"],["cheap","Cheapest"],["yoy","Biggest movers"],["vol","Most active"],["value","Best value $/sqm"]].map(([k,lbl]) =>
           `<button class="chip${trendsState.sortBy===k?" active":""}" onclick="setTownGridSort('${k}')">${lbl}</button>`
         ).join("")}
       </div>
@@ -3208,7 +3222,7 @@ function renderTrends() {
   requestAnimationFrame(() => {
     const chartWrap = document.getElementById("trendsChartWrap");
     if (chartWrap && chartWrap.clientWidth > 10) {
-      chartWrap.innerHTML = buildComboChart(chartWrap.clientWidth);
+      chartWrap.innerHTML = buildComboChart(chartWrap.clientWidth, periodMedianNat);
     }
     attachChartListeners();
     attachChartResizeObserver();
@@ -3243,7 +3257,7 @@ function getFilteredNatTL() {
   return tl;
 }
 
-function buildComboChart(W = 800) {
+function buildComboChart(W = 800, refMedian = null) {
   const tl    = getFilteredNatTL();
   const valid = tl.filter(d => d.med != null || d.vol != null);
   if (valid.length < 2) return "";
@@ -3410,6 +3424,14 @@ function buildComboChart(W = 800) {
     <path d="${area}" fill="url(#natGrad)"/>
     <path id="natLine" d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     ${overlayLines}
+    ${(() => {
+      if (refMedian == null || refMedian < minP || refMedian > maxP) return "";
+      const ry = py(refMedian).toFixed(1);
+      return `<line x1="${pad.l}" y1="${ry}" x2="${W - pad.r}" y2="${ry}"
+        stroke="rgba(255,255,255,0.35)" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="${pad.l + 4}" y="${(Number(ry) - 3).toFixed(1)}" font-size="9" fill="rgba(255,255,255,0.5)"
+          font-family="Inter,sans-serif">Now: ${fmtKs(refMedian)}</text>`;
+    })()}
     <!-- Crosshair (hidden by default) -->
     <line id="chartCross" x1="0" y1="${pad.t}" x2="0" y2="${H-pad.b}" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
     <circle id="chartDot" cx="0" cy="0" r="4" fill="var(--accent)" stroke="var(--bg-1)" stroke-width="2" visibility="hidden"/>
@@ -3431,7 +3453,7 @@ function attachChartResizeObserver() {
     const w = Math.floor(entries[0].contentRect.width);
     if (w < 10 || w === lastW) return;
     lastW = w;
-    wrap.innerHTML = buildComboChart(w);
+    wrap.innerHTML = buildComboChart(w, trendsState._refMedian);
     attachChartListeners();
   });
   _chartResizeObs.observe(wrap);
