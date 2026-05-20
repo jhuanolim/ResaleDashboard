@@ -3176,7 +3176,7 @@ function renderTrends() {
     </div>
 
     <!-- Section 01: Where prices moved most (4 cols, alongside chart) -->
-    <div class="trends-side-col">
+    <div class="trends-side-col" id="trendsSideCol">
       <div class="trends-section-header">
         <div class="trends-section-header-inner">
           <span class="trends-section-num">01</span>
@@ -3250,13 +3250,9 @@ function renderTrends() {
 
   </div>`;
 
-  // Re-render chart at actual width then attach observer
+  // Re-render chart at actual size then attach observer
   requestAnimationFrame(() => {
-    const chartWrap = document.getElementById("trendsChartWrap");
-    if (chartWrap && chartWrap.clientWidth > 10) {
-      const h = chartWrap.clientHeight > 40 ? chartWrap.clientHeight : null;
-      chartWrap.innerHTML = buildComboChart(chartWrap.clientWidth, periodMedianNat, h);
-    }
+    syncChartHeight();
     attachChartListeners();
     attachChartResizeObserver();
   });
@@ -3477,22 +3473,57 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
 
 let _chartResizeObs = null;
 
+// Set the chart wrap height to match the side column, then render the SVG into it.
+// Uses bounding rects to measure precisely how much vertical space in the card is
+// consumed by padding + sibling elements (header, overlay section). No estimates.
+// No feedback loop: side col height is driven by its 4 stacked cards, not the chart.
+function syncChartHeight() {
+  const wrap = document.getElementById("trendsChartWrap");
+  const side = document.getElementById("trendsSideCol");
+  if (!wrap || !side) return;
+
+  const sideH = side.offsetHeight;
+  const card  = wrap.closest(".trends-chart-card");
+
+  let nonWrapH = 0;
+  if (card) {
+    const cs = getComputedStyle(card);
+    nonWrapH += parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    // measure each sibling directly — avoids any hardcoded gap values
+    for (const child of card.children) {
+      if (child === wrap) continue;
+      const r = child.getBoundingClientRect();
+      const childCs = getComputedStyle(child);
+      nonWrapH += r.height
+        + parseFloat(childCs.marginTop || 0)
+        + parseFloat(childCs.marginBottom || 0);
+    }
+  }
+
+  const targetH = Math.max(sideH - nonWrapH, 120);
+  wrap.style.height = targetH + "px";
+  const w = wrap.clientWidth;
+  if (w > 10) {
+    wrap.innerHTML = buildComboChart(w, trendsState._refMedian, targetH);
+    attachChartListeners();
+  }
+}
+
 function attachChartResizeObserver() {
   const wrap = document.getElementById("trendsChartWrap");
+  const side = document.getElementById("trendsSideCol");
   if (!wrap) return;
   if (_chartResizeObs) _chartResizeObs.disconnect();
   let lastW = 0, lastH = 0;
-  _chartResizeObs = new ResizeObserver(entries => {
-    const { width, height } = entries[0].contentRect;
-    const w = Math.floor(width);
-    const h = Math.floor(height);
+  _chartResizeObs = new ResizeObserver(() => {
+    const w = wrap.clientWidth;
+    const h = side ? side.offsetHeight : 0;
     if (w < 10 || (w === lastW && h === lastH)) return;
     lastW = w; lastH = h;
-    const chartH = h > 40 ? h : null;
-    wrap.innerHTML = buildComboChart(w, trendsState._refMedian, chartH);
-    attachChartListeners();
+    syncChartHeight();
   });
   _chartResizeObs.observe(wrap);
+  if (side) _chartResizeObs.observe(side);
 }
 
 function attachChartListeners() {
