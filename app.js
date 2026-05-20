@@ -2865,28 +2865,51 @@ function getFilteredTownTL(id) {
   return full;
 }
 
+const HDB_FLOOR_AREA = {
+  "1 ROOM": 35, "2 ROOM": 45, "3 ROOM": 68, "4 ROOM": 93,
+  "5 ROOM": 113, "EXECUTIVE": 140, "MULTI-GENERATION": 155
+};
+
 function buildTownMovers() {
+  const ft = trendsState.flatType;
   return DB.towns.map(id => {
     const s  = DB.town_summaries[id];
-    const tl = getFilteredTownTL(id);
+    const tl = getFilteredTownTL(id); // already period+type filtered
     if (!s || tl.length < 2) return null;
     const now  = tl[tl.length-1].med;
     const prev = tl[0].med;
     const medianVal = now || s.median;
-    // Vol: sum vol entries in the period window from national TL alignment
-    const fullTl = getTrendsTownTL(id).filter(t => t.med != null);
-    const offset = fullTl.length - tl.length;
-    const volInPeriod = s.vol_by_year
-      ? (() => {
-          const natSlice = getFilteredNatTL();
-          const minY = parseInt(natSlice[0]?.m);
-          const maxY = parseInt(natSlice[natSlice.length-1]?.m);
-          let v = 0;
-          for (let y = minY; y <= maxY; y++) v += (s.vol_by_year?.[y] || 0);
-          return v;
-        })()
-      : s.vol;
-    return { id, name: s.name, region: s.region, median: medianVal, ppsqm: s.ppsqm,
+
+    // Vol: sum the vol field from the period-sliced national-aligned town timeline
+    // getTrendsTownTL gives the full type-filtered timeline; slice to match period length
+    const fullTownTl = getTrendsTownTL(id).filter(d => d.med != null);
+    const periodLen  = tl.length;
+    const volSlice   = fullTownTl.slice(-periodLen);
+    const volInPeriod = volSlice.reduce((sum, d) => sum + (d.vol || 0), 0) || s.vol;
+
+    // $/sqm: compute from filtered timeline median + floor area
+    // When a specific flat type is selected, use its floor area directly.
+    // When ALL, derive weighted average floor area from type_mix.
+    const periodMed = (() => {
+      const prices = tl.map(d => d.med).filter(Boolean).sort((a, b) => a - b);
+      return prices.length ? prices[Math.floor(prices.length / 2)] : null;
+    })();
+    const floorArea = (() => {
+      if (ft !== "ALL") return HDB_FLOOR_AREA[ft] || null;
+      const mix = s.type_mix || {};
+      let totalPct = 0, weightedArea = 0;
+      for (const [type, area] of Object.entries(HDB_FLOOR_AREA)) {
+        const pct = mix[type] || 0;
+        weightedArea += pct * area;
+        totalPct += pct;
+      }
+      return totalPct > 0 ? weightedArea / totalPct : 93; // default to 4-room
+    })();
+    const ppsqm = (periodMed && floorArea)
+      ? Math.round(periodMed * 1000 / floorArea)
+      : s.ppsqm;
+
+    return { id, name: s.name, region: s.region, median: medianVal, ppsqm,
              dpct: prev > 0 ? (now - prev) / prev * 100 : 0, vol: volInPeriod };
   }).filter(Boolean);
 }
@@ -2964,10 +2987,6 @@ function renderTrends() {
 
   // --- KPI 4: Median $/sqm — computed from national_type_timelines + standard floor areas ---
   // This is period-aware (uses the sliced window months) and flat-type-aware
-  const HDB_FLOOR_AREA = {
-    "1 ROOM": 35, "2 ROOM": 45, "3 ROOM": 68, "4 ROOM": 93,
-    "5 ROOM": 113, "EXECUTIVE": 140, "MULTI-GENERATION": 155
-  };
   const periodMonthSet = new Set(validNat.map(d => d.m));
   const computePpsqm = (monthSet) => {
     const ntt = DB.national_type_timelines || {};
