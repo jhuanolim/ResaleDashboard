@@ -58,6 +58,9 @@ REGION = {
     "WOODLANDS": "North", "YISHUN": "North",
 }
 
+def lcd_band(lcd_year):
+    return (lcd_year // 5) * 5
+
 def percentile(data, p):
     if not data: return 0
     s = sorted(data)
@@ -117,33 +120,148 @@ all_lease_years = sorted(set(r["lcd"] for r in rows))
 
 # ── per-town monthly medians (for sparklines & town timeline) ──────────────
 print("Building town monthly medians ...")
-town_month_prices     = defaultdict(lambda: defaultdict(list))
-town_type_month_prices = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+town_month_rows        = defaultdict(lambda: defaultdict(list))   # town -> month -> [row]
+town_type_month_rows   = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))  # town -> type -> month -> [row]
 for r in rows:
-    town_month_prices[r["town"]][r["month"]].append(r["price"])
-    town_type_month_prices[r["town"]][r["type"]][r["month"]].append(r["price"])
+    town_month_rows[r["town"]][r["month"]].append(r)
+    town_type_month_rows[r["town"]][r["type"]][r["month"]].append(r)
+
+def storey_band(storey_str):
+    """Return 'low'/'mid'/'high' from storey_range string like '07 TO 09'."""
+    m = re.match(r"(\d+)", storey_str)
+    if not m:
+        return None
+    fl = int(m.group(1))
+    return "low" if fl <= 6 else "mid" if fl <= 12 else "high"
 
 town_timeline = {}
 for t in towns:
     tl = []
     for m in all_months:
-        ps = town_month_prices[t].get(m, [])
-        tl.append({"m": m, "med": round(median(ps) / 1000, 1) if ps else None})
+        rs = town_month_rows[t].get(m, [])
+        if not rs:
+            tl.append({"m": m, "med": None})
+            continue
+        prices = [r["price"] for r in rs]
+        ppsqms = [r["ppsqm"] for r in rs if r["ppsqm"]]
+        leases = [r["lease_yrs"] for r in rs if r["lease_yrs"] is not None]
+        storey_bands = {"low": [], "mid": [], "high": []}
+        for r in rs:
+            b = storey_band(r["storey"])
+            if b:
+                storey_bands[b].append(r["price"])
+        row = {
+            "m":   m,
+            "med": round(median(prices) / 1000, 1),
+            "vol": len(rs),
+        }
+        if ppsqms:
+            row["ppsqm"] = round(median(ppsqms))
+        if leases:
+            row["med_lease"] = round(median(leases))
+        for band, bps in storey_bands.items():
+            if bps:
+                row[f"storey_{band}"] = round(median(bps) / 1000, 1)
+        tl.append(row)
     town_timeline[t] = tl
 
-# per-town per-type timelines
+# per-town per-type timelines — include ppsqm and vol
 town_type_timelines = {}
 for t in towns:
     by_type = {}
     for ft in FLAT_ORDER:
         tl = []
         for m in all_months:
-            ps = town_type_month_prices[t][ft].get(m, [])
-            tl.append({"m": m, "med": round(median(ps) / 1000, 1) if ps else None})
+            rs = town_type_month_rows[t][ft].get(m, [])
+            if not rs:
+                tl.append({"m": m, "med": None})
+                continue
+            prices = [r["price"] for r in rs]
+            ppsqms = [r["ppsqm"] for r in rs if r["ppsqm"]]
+            row = {
+                "m":   m,
+                "med": round(median(prices) / 1000, 1),
+                "vol": len(rs),
+            }
+            if ppsqms:
+                row["ppsqm"] = round(median(ppsqms))
+            tl.append(row)
         # only include if there are any data points
         if any(d["med"] is not None for d in tl):
             by_type[ft] = tl
     town_type_timelines[t] = by_type
+
+# ── per-town per-LCD-band monthly timelines (for town page LCD filter) ───────
+# Only emit towns/bands that have data. Each monthly row includes med, ppsqm, med_lease,
+# storey_low/mid/high so the town page can slice by period AND by LCD band simultaneously.
+print("Building town LCD-band timelines ...")
+town_lcd_band_rows = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+# town -> lcd_band_start -> month -> [row]
+for r in rows:
+    band = lcd_band(r["lcd"])
+    town_lcd_band_rows[r["town"]][band][r["month"]].append(r)
+
+town_lcd_band_timelines = {}
+for t in towns:
+    by_band = {}
+    for band_start, month_map in town_lcd_band_rows[t].items():
+        tl = []
+        for m in all_months:
+            rs = month_map.get(m, [])
+            if not rs:
+                tl.append({"m": m, "med": None})
+                continue
+            prices = [r["price"] for r in rs]
+            ppsqms = [r["ppsqm"] for r in rs if r["ppsqm"]]
+            leases = [r["lease_yrs"] for r in rs if r["lease_yrs"] is not None]
+            sbands = {"low": [], "mid": [], "high": []}
+            for r in rs:
+                b = storey_band(r["storey"])
+                if b:
+                    sbands[b].append(r["price"])
+            row = {"m": m, "med": round(median(prices) / 1000, 1), "vol": len(rs)}
+            if ppsqms:
+                row["ppsqm"] = round(median(ppsqms))
+            if leases:
+                row["med_lease"] = round(median(leases))
+            for bk, bps in sbands.items():
+                if bps:
+                    row[f"storey_{bk}"] = round(median(bps) / 1000, 1)
+            tl.append(row)
+        if any(d["med"] is not None for d in tl):
+            by_band[str(band_start)] = tl
+    if by_band:
+        town_lcd_band_timelines[t] = by_band
+
+print(f"  {sum(len(v) for v in town_lcd_band_timelines.values())} town×band combinations")
+
+# ── per-town per-type per-LCD-band aggregate stats (compact, for flat type panel) ──
+# Stores all-time med + ppsqm + vol per town×type×band.
+# Size: ~26 towns × 6 types × ~12 bands ≈ tiny.
+print("Building town type LCD-band stats ...")
+town_type_lcd_rows = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+# town -> type -> lcd_band_start -> [row]
+for r in rows:
+    band = lcd_band(r["lcd"])
+    town_type_lcd_rows[r["town"]][r["type"]][band].append(r)
+
+town_type_lcd_stats = {}
+for t in towns:
+    by_type = {}
+    for ft in FLAT_ORDER:
+        by_band = {}
+        for band_start, rs in town_type_lcd_rows[t][ft].items():
+            if not rs: continue
+            prices = [r["price"] for r in rs]
+            ppsqms = [r["ppsqm"] for r in rs if r["ppsqm"]]
+            entry = {"med": round(median(prices) / 1000, 1), "vol": len(rs)}
+            if ppsqms:
+                entry["ppsqm"] = round(median(ppsqms))
+            by_band[str(band_start)] = entry
+        if by_band:
+            by_type[ft] = by_band
+    if by_type:
+        town_type_lcd_stats[t] = by_type
 
 # ── global monthly medians (for national timeline) ─────────────────────────
 print("Building national timeline ...")
@@ -271,16 +389,17 @@ for t in towns:
     scatter_rows = sorted(last12_rows, key=lambda x: -x["price"])[:300]
     scatter = [{"x": r["sqm"], "y": round(r["price"]/1000,1), "t": r["type"]} for r in scatter_rows]
 
-    # recent transactions (last 20) — include lease_yrs for flag
+    # recent transactions (last 100) — include lease_yrs for flag + floor_area_sqm for $/sqm
     recent_txns = sorted(
         [r for r in rows if r["town"] == t],
         key=lambda x: x["month"],
         reverse=True
-    )[:20]
+    )[:100]
     recent_out = [{"month": r["month"], "block": r["block"], "street": r["street"],
                    "type": r["type"], "sqm": r["sqm"], "storey": r["storey"],
                    "price": r["price"], "ppsqm": r["ppsqm"], "lcd": r["lcd"],
-                   "lease_yrs": r["lease_yrs"]} for r in recent_txns]
+                   "lease_yrs": r["lease_yrs"],
+                   "floor_area_sqm": r["sqm"]} for r in recent_txns]
 
     town_summaries[t] = {
         "id":              t,
@@ -361,6 +480,51 @@ for (town, block, street), type_prices in block_data.items():
     })
 print(f"  Block coords: {geocoded:,} geocoded, {fallback:,} using town centroid fallback")
 
+# ── lcd band timelines (5-year bands, for filtered national trend chart) ──
+# Each transaction is bucketed into its 5-year LCD band (band start = floor to nearest 5).
+# Monthly medians are computed per band. Bands with <5 transactions in a month get null.
+# Frontend merges overlapping bands via volume-weighted median when slider is active.
+print("Building LCD band timelines ...")
+LCD_BAND_MIN_TXN = 5  # suppress noisy months below this count
+
+def lcd_band(lcd_year):
+    return (lcd_year // 5) * 5
+
+lcd_band_month_prices      = defaultdict(lambda: defaultdict(list))        # band -> month -> [prices]
+lcd_band_type_month_prices = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))  # band -> type -> month -> [prices]
+for r in rows:
+    band = lcd_band(r["lcd"])
+    lcd_band_month_prices[band][r["month"]].append(r["price"])
+    lcd_band_type_month_prices[band][r["type"]][r["month"]].append(r["price"])
+
+lcd_band_timelines = {}
+for band_start in sorted(lcd_band_month_prices.keys()):
+    tl = []
+    for m in all_months:
+        ps = lcd_band_month_prices[band_start].get(m, [])
+        med_val = round(median(ps) / 1000, 1) if len(ps) >= LCD_BAND_MIN_TXN else None
+        tl.append({"m": m, "med": med_val, "vol": len(ps)})
+    if any(d["med"] is not None for d in tl):
+        lcd_band_timelines[str(band_start)] = tl
+
+# Per-type breakdown within each LCD band (for flat type + LCD combined filtering)
+lcd_band_type_timelines = {}
+for band_start in sorted(lcd_band_type_month_prices.keys()):
+    by_type = {}
+    for ft in FLAT_ORDER:
+        tl = []
+        for m in all_months:
+            ps = lcd_band_type_month_prices[band_start][ft].get(m, [])
+            med_val = round(median(ps) / 1000, 1) if len(ps) >= LCD_BAND_MIN_TXN else None
+            tl.append({"m": m, "med": med_val, "vol": len(ps)})
+        if any(d["med"] is not None for d in tl):
+            by_type[ft] = tl
+    if by_type:
+        lcd_band_type_timelines[str(band_start)] = by_type
+
+print(f"  {len(lcd_band_timelines)} LCD bands: {sorted(int(k) for k in lcd_band_timelines)}")
+print(f"  {sum(len(v) for v in lcd_band_type_timelines.values())} LCD band×type combinations")
+
 # ── price range stats (for filter sliders) ────────────────────────────────
 all_prices = [r["price"] for r in rows]
 price_stats = {
@@ -383,9 +547,13 @@ output = {
     "price_stats":       price_stats,
     "national_timeline":       national_timeline,
     "national_type_timelines": national_type_timelines,
+    "lcd_band_timelines":      lcd_band_timelines,
+    "lcd_band_type_timelines": lcd_band_type_timelines,
     "town_summaries":          town_summaries,
     "town_timelines":          town_timeline,
     "town_type_timelines":     town_type_timelines,
+    "town_lcd_band_timelines": town_lcd_band_timelines,
+    "town_type_lcd_stats":     town_type_lcd_stats,
     "blocks":                  blocks_out,
 }
 

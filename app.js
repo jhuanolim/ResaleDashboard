@@ -505,6 +505,48 @@ function deltaPill(pct) {
   return `<span class="delta-pill ${cls}">${arrow} ${fmtPct(pct)}</span>`;
 }
 
+/* ── Tooltip system ─────────────────────────────────────────────────────── */
+// Single floating tooltip element, shown on data-tip elements after 200ms delay.
+// Flips below if clipped by viewport top. Use data-tip="text" on any element.
+(function initTooltip() {
+  const el = document.createElement("div");
+  el.id = "appTooltip";
+  el.className = "app-tooltip";
+  document.body.appendChild(el);
+
+  let timer = null;
+  document.addEventListener("mouseover", e => {
+    const target = e.target.closest("[data-tip]");
+    if (!target) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      el.textContent = target.dataset.tip;
+      el.style.display = "block";
+      positionTooltip(el, target);
+    }, 200);
+  });
+  document.addEventListener("mouseout", e => {
+    const target = e.target.closest("[data-tip]");
+    if (!target) return;
+    clearTimeout(timer);
+    el.style.display = "none";
+  });
+  document.addEventListener("scroll", () => { el.style.display = "none"; }, true);
+
+  function positionTooltip(tip, anchor) {
+    const r = anchor.getBoundingClientRect();
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    let top = r.top - th - 8 + window.scrollY;
+    let left = r.left + r.width / 2 - tw / 2 + window.scrollX;
+    // flip below if clipped at top
+    if (r.top - th - 8 < 0) top = r.bottom + 8 + window.scrollY;
+    // clamp horizontal
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+    tip.style.top  = top + "px";
+    tip.style.left = left + "px";
+  }
+})();
+
 /* ══════════════════════════════════════════════════════════════════════════
    MRT DATA
    ══════════════════════════════════════════════════════════════════════════ */
@@ -1860,6 +1902,14 @@ window.drawerAddToCompare = function(townId) {
    ══════════════════════════════════════════════════════════════════════════ */
 function openTownDashboard(townId) {
   state.activeTown = townId;
+  // Reset per-town filter state when navigating to a new town
+  if (townDashState.townId !== townId) {
+    townDashState.flatType = "ALL";
+    townDashState.lcdMin = null;
+    townDashState.lcdMax = null;
+    townDashState._decadeFilter = null;
+    townDashState._txnShown = 20;
+  }
   showView("town");
   renderTownDashboard(townId);
 }
@@ -1874,74 +1924,93 @@ const TYPE_LINE_COLORS = {
   "MULTI-GENERATION":"#facc15",
 };
 
-function buildTypeTrendChart(townId, W = 620, sliceTlFn = null) {
-  const ttl = DB.town_type_timelines?.[townId] || {};
-  const types = Object.keys(ttl).filter(ft => ttl[ft]?.length >= 2);
-  if (!types.length) return "<div class='td-insuf'>No flat-type timeline data</div>";
+// Hidden types (1 ROOM + MULTI-GENERATION default hidden; togglable via legend clicks)
+if (!window._tdHiddenTypes) window._tdHiddenTypes = new Set(["1 ROOM", "MULTI-GENERATION"]);
 
-  const H = Math.round(W * (220 / 620));
-  const pad = { t: 16, b: 28, l: 48, r: Math.min(110, Math.round(W * 0.18)) };
+window.tdToggleType = function(ft) {
+  if (_tdHiddenTypes.has(ft)) _tdHiddenTypes.delete(ft);
+  else _tdHiddenTypes.add(ft);
+  // Re-render chart only — full re-render via renderTownDashboard handles everything else
+  renderTownDashboard(townDashState.townId);
+};
+
+function buildTypeTrendChart(townId, W = 620, sliceTlFn = null, lcdTl = null) {
+  const ttl = DB.town_type_timelines?.[townId] || {};
+  const allTypes = Object.keys(ttl).filter(ft => ttl[ft]?.length >= 2);
+  const types = allTypes.filter(ft => !_tdHiddenTypes.has(ft));
+
+  // Min height 280px, aspect ratio ~3:1
+  const H = Math.max(280, Math.round(W * (280 / 620)));
+  const pad = { t: 16, b: 28, l: 52, r: Math.min(110, Math.round(W * 0.18)) };
   const chartW = W - pad.l - pad.r;
   const chartH = H - pad.t - pad.b;
 
-  // Unified month axis — sliced to period when fn is provided
-  const rawTl = DB.town_timelines[townId] || [];
-  const slicedTl = sliceTlFn ? sliceTlFn(rawTl.filter(d => d.med != null)) : rawTl;
+  // When LCD is active, lcdTl is the merged LCD-filtered town timeline.
+  // Use it for the month axis. Type lines still come from town_type_timelines
+  // but are restricted to months present in the LCD-filtered window.
+  const baseTl = lcdTl || (DB.town_timelines[townId] || []);
+  const rawTl = baseTl.filter(d => d.med != null);
+  const slicedTl = sliceTlFn ? sliceTlFn(rawTl) : rawTl;
   const allMonths = slicedTl.map(d => d.m);
   if (!allMonths.length) return "";
 
-  // Y range across all types within the sliced window
+  // Always use per-type timelines for lines. When lcdTl is active, monthSet already
+  // restricts lines to the LCD-filtered window — no override series needed.
+  const effectiveTtl = ttl;
+  const effectiveAllTypes = allTypes;
+  const effectiveTypes = types;
+
+  if (!effectiveAllTypes.length) return "<div class='td-insuf'>No flat-type timeline data</div>";
+
   const monthSet = new Set(allMonths);
-  const allVals = types.flatMap(ft => ttl[ft].filter(d => monthSet.has(d.m)).map(d => d.med).filter(Boolean));
+  // Use visible types only for Y scale, but show all if none visible
+  const visTypes = effectiveTypes.length ? effectiveTypes : effectiveAllTypes;
+  const allVals = visTypes.flatMap(ft => (effectiveTtl[ft] || []).filter(d => monthSet.has(d.m)).map(d => d.med).filter(Boolean));
   if (!allVals.length) return "";
   const minV = Math.min(...allVals) * 0.96;
   const maxV = Math.max(...allVals) * 1.03;
 
-  const px = i  => pad.l + (i / (allMonths.length - 1)) * chartW;
-  const py = v  => pad.t + (1 - (v - minV) / (maxV - minV)) * chartH;
+  const px = i => pad.l + (i / Math.max(allMonths.length - 1, 1)) * chartW;
+  const py = v => pad.t + (1 - (v - minV) / (maxV - minV)) * chartH;
 
-  // Y-axis ticks
-  const yTicks = Array.from({length: 4}, (_, i) => {
-    const v = minV + (maxV - minV) * (i / 3);
+  const yTicks = Array.from({length: 5}, (_, i) => {
+    const v = minV + (maxV - minV) * (i / 4);
     const y = py(v);
-    return `<line x1="${pad.l - 3}" y1="${y.toFixed(1)}" x2="${W - pad.r}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+    return `<line x1="${pad.l}" y1="${y.toFixed(1)}" x2="${W - pad.r}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
             <text x="${pad.l - 6}" y="${(y + 4).toFixed(1)}" font-size="9" fill="var(--ink-3)" text-anchor="end" font-family="Inter,sans-serif">$${Math.round(v)}k</text>`;
   }).join("");
 
-  // X-axis year labels
   const seenYrs = new Set();
   const xLabels = allMonths.map((m, i) => {
     const yr = m.slice(0, 4);
-    if (i % 12 !== 0 || seenYrs.has(yr)) return "";
+    if (seenYrs.has(yr)) return "";
+    // show every 1Y for short windows, every 2Y for long
+    const step = allMonths.length > 60 ? 24 : 12;
+    if (i % step !== 0) return "";
     seenYrs.add(yr);
-    return `<text x="${px(i).toFixed(1)}" y="${H}" font-size="9" fill="var(--ink-3)" text-anchor="middle" font-family="Inter,sans-serif">${yr}</text>`;
+    return `<text x="${px(i).toFixed(1)}" y="${H - 4}" font-size="9" fill="var(--ink-3)" text-anchor="middle" font-family="Inter,sans-serif">${yr}</text>`;
   }).join("");
 
-  // Collect last-Y per type for label collision avoidance (same algorithm as combo chart)
   const LINE_H = 13;
-  const typeEntries = types.map(ft => {
-    const series = ttl[ft];
+  const typeEntries = visTypes.map(ft => {
+    const series = effectiveTtl[ft] || [];
     const c = TYPE_LINE_COLORS[ft] || "var(--accent)";
-    // Map each series point to a position on the shared x axis
-    const pts = series
-      .map(d => {
-        const xi = allMonths.indexOf(d.m);
-        if (xi < 0 || d.med == null) return null;
-        return [px(xi), py(d.med)];
-      })
-      .filter(Boolean);
+    const hidden = _tdHiddenTypes.has(ft);
+    const pts = series.map(d => {
+      const xi = allMonths.indexOf(d.m);
+      if (xi < 0 || d.med == null) return null;
+      return [px(xi), py(d.med), d.med];
+    }).filter(Boolean);
     if (pts.length < 2) return null;
-
     let lp = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
     for (let i = 1; i < pts.length; i++) {
       const cp1x = (pts[i-1][0] + pts[i][0]) / 2;
       lp += ` C${cp1x.toFixed(1)},${pts[i-1][1].toFixed(1)} ${cp1x.toFixed(1)},${pts[i][1].toFixed(1)} ${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)}`;
     }
     const lastPt = pts[pts.length - 1];
-    return { ft, c, lp, dotY: lastPt[1], lblY: lastPt[1], lastX: lastPt[0] };
+    return { ft, c, lp, dotY: lastPt[1], lblY: lastPt[1], lastX: lastPt[0], hidden, pts };
   }).filter(Boolean);
 
-  // Spread labels
   typeEntries.sort((a, b) => a.dotY - b.dotY);
   for (let i = 1; i < typeEntries.length; i++) {
     if (typeEntries[i].lblY - typeEntries[i-1].lblY < LINE_H)
@@ -1956,22 +2025,74 @@ function buildTypeTrendChart(townId, W = 620, sliceTlFn = null) {
   }
 
   const labelX = W - pad.r + 8;
-  const lines = typeEntries.map(({ ft, c, lp, dotY, lblY, lastX }) => {
+  const lines = typeEntries.map(({ ft, c, lp, dotY, lblY, lastX, hidden }) => {
     const lbl = ft.replace(" ROOM","‑Rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MultiGen");
-    const leader = Math.abs(lblY - dotY) > 3
+    const op = hidden ? "0.18" : "0.9";
+    const leader = !hidden && Math.abs(lblY - dotY) > 3
       ? `<line x1="${lastX.toFixed(1)}" y1="${dotY.toFixed(1)}" x2="${labelX.toFixed(1)}" y2="${(lblY+1).toFixed(1)}" stroke="${c}" stroke-width="1" opacity="0.35" stroke-dasharray="2 2"/>`
       : "";
-    return `<path d="${lp}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>
-            <circle cx="${lastX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="3" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/>
+    return `<path d="${lp}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="${op}"/>
+            ${!hidden ? `<circle cx="${lastX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="3" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/>` : ""}
             ${leader}
-            <text x="${labelX.toFixed(1)}" y="${(lblY+4).toFixed(1)}" font-size="9" fill="${c}" font-family="Inter,sans-serif" font-weight="700">${lbl}</text>`;
+            <text x="${labelX.toFixed(1)}" y="${(lblY+4).toFixed(1)}" font-size="9" fill="${c}" font-family="Inter,sans-serif" font-weight="700" opacity="${hidden ? "0.35" : "1"}">${lbl}</text>`;
   }).join("");
 
-  return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
-    ${yTicks}${xLabels}${lines}
+  // Hover overlay — invisible rect strips per month that trigger tooltip
+  const volByMonth = {};
+  slicedTl.forEach(d => { volByMonth[d.m] = d.vol; });
+  const hoverRects = allMonths.map((m, i) => {
+    const x = px(i);
+    const slotW = allMonths.length > 1 ? chartW / (allMonths.length - 1) : chartW;
+    const tipLines = typeEntries
+      .filter(e => !e.hidden)
+      .map(e => {
+        const pt = e.pts.find(p => {
+          const xi = allMonths.indexOf(m);
+          return xi >= 0 && Math.abs(p[0] - px(xi)) < 1;
+        });
+        const val = pt ? fmtKs(pt[2]) : "—";
+        return `${e.ft.replace(" ROOM","‑Rm").replace("EXECUTIVE","Exec")}: ${val}`;
+      }).join(" · ");
+    const vol = volByMonth[m];
+    const tip = `${fmtMonth(m)} · ${tipLines}${vol ? ` · ${vol} txns` : ""}`;
+    return `<rect x="${(x - slotW/2).toFixed(1)}" y="${pad.t}" width="${slotW.toFixed(1)}" height="${chartH}" fill="transparent" data-tip="${tip.replace(/"/g,"'")}"/>`;
+  }).join("");
+
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible;min-height:280px">
+    ${yTicks}${xLabels}${lines}${hoverRects}
   </svg>`;
 }
 
+
+// ── Town filter helpers ──────────────────────────────────────────────────────
+window.setTownPeriod = (p) => { townDashState.period = p.toLowerCase(); if (townDashState.townId) renderTownDashboard(townDashState.townId); };
+window.setTownFlatType = (ft) => { townDashState.flatType = ft; renderTownDashboard(townDashState.townId); };
+window.tdLcdInput = () => {
+  const lo = document.getElementById("tdLcdLo"), hi = document.getElementById("tdLcdHi");
+  if (!lo || !hi) return;
+  let a = parseInt(lo.value), b = parseInt(hi.value);
+  if (a > b) [a, b] = [b, a];
+  townDashState.lcdMin = a; townDashState.lcdMax = b;
+  const fill = document.getElementById("tdLcdFill");
+  const mn = 1960, mx = 2025, range = mx - mn;
+  if (fill) { fill.style.left = ((a - mn) / range * 100) + "%"; fill.style.right = (100 - (b - mn) / range * 100) + "%"; }
+  const lbl = document.getElementById("tdLcdLabel");
+  if (lbl) lbl.textContent = `${a} – ${b}`;
+};
+window.tdLcdCommit = () => renderTownDashboard(townDashState.townId);
+window.tdLcdReset = () => { townDashState.lcdMin = null; townDashState.lcdMax = null; renderTownDashboard(townDashState.townId); };
+window.tdClickDecade = (d) => {
+  townDashState._decadeFilter = townDashState._decadeFilter === d ? null : d;
+  renderTownDashboard(townDashState.townId);
+};
+window.tdClearDecadeFilter = () => { townDashState._decadeFilter = null; renderTownDashboard(townDashState.townId); };
+window.tdFilterBlocks = () => {
+  const q = (document.getElementById("tdBlockSearch")?.value || "").toLowerCase();
+  document.querySelectorAll(".td-block-row").forEach(row => {
+    row.style.display = (row.dataset.search || "").includes(q) ? "" : "none";
+  });
+};
+window.tdShowMoreTxns = () => { townDashState._txnShown = (townDashState._txnShown || 30) + 30; renderTownDashboard(townDashState.townId); };
 
 function renderTownDashboard(townId) {
   const s  = DB.town_summaries[townId];
@@ -1979,10 +2100,63 @@ function renderTownDashboard(townId) {
   if (!s) return;
 
   townDashState.townId = townId;
-  const period = townDashState.period;
+  const { period, flatType, lcdMin, lcdMax, _decadeFilter, _txnShown } = townDashState;
 
-  // Slice timeline to selected period
-  const fullTl = tl.filter(d => d.med != null);
+  // ── Timeline helpers ──────────────────────────────────────────────────────
+  const lcdActive = lcdMin != null || lcdMax != null;
+  const lcdLo = lcdMin ?? 1960, lcdHi = lcdMax ?? 2025;
+
+  // Merge town LCD-band timelines that overlap [lcdLo, lcdHi] into one timeline.
+  // Each band covers [bandStart, bandStart+4]. Volume-weighted median per month.
+  function getMergedLcdTownTl() {
+    const bands = DB.town_lcd_band_timelines?.[townId];
+    if (!bands) return null;
+    const activeBands = Object.entries(bands).filter(([k]) => {
+      const bs = parseInt(k);
+      return bs + 4 >= lcdLo && bs <= lcdHi;
+    }).map(([, tl]) => tl);
+    if (!activeBands.length) return null;
+    // Merge: for each month, volume-weighted median across bands
+    const byMonth = {};
+    for (const btl of activeBands) {
+      for (const row of btl) {
+        if (row.med == null) continue;
+        if (!byMonth[row.m]) byMonth[row.m] = { prices: [], ppsqms: [], leases: [], sl: [], sm: [], sh: [], vol: 0 };
+        const bm = byMonth[row.m];
+        const v = row.vol || 1;
+        // Approximate: push median vol times to get weighted median
+        for (let i = 0; i < v; i++) bm.prices.push(row.med);
+        bm.vol += v;
+        if (row.ppsqm) for (let i = 0; i < v; i++) bm.ppsqms.push(row.ppsqm);
+        if (row.med_lease) for (let i = 0; i < v; i++) bm.leases.push(row.med_lease);
+        if (row.storey_low)  for (let i = 0; i < v; i++) bm.sl.push(row.storey_low);
+        if (row.storey_mid)  for (let i = 0; i < v; i++) bm.sm.push(row.storey_mid);
+        if (row.storey_high) for (let i = 0; i < v; i++) bm.sh.push(row.storey_high);
+      }
+    }
+    const med = arr => { if (!arr.length) return null; const s = arr.slice().sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; };
+    return (DB.town_timelines[townId] || []).map(row => {
+      const bm = byMonth[row.m];
+      if (!bm) return { m: row.m, med: null };
+      const r = { m: row.m, med: med(bm.prices), vol: bm.vol };
+      const pp = med(bm.ppsqms); if (pp) r.ppsqm = pp;
+      const ml = med(bm.leases); if (ml) r.med_lease = ml;
+      const sl = med(bm.sl); if (sl) r.storey_low = sl;
+      const sm = med(bm.sm); if (sm) r.storey_mid = sm;
+      const sh = med(bm.sh); if (sh) r.storey_high = sh;
+      return r;
+    });
+  }
+
+  // Base timeline: LCD-filtered when active, otherwise town timeline (or type-specific)
+  const mergedLcdTl = lcdActive ? getMergedLcdTownTl() : null;
+  const rawTl = mergedLcdTl
+    ? mergedLcdTl
+    : (flatType !== "ALL" ? (DB.town_type_timelines?.[townId]?.[flatType] || tl) : tl);
+
+  const fullTl = rawTl.filter(d => d.med != null);
+  // lcdChartTl: pass to buildTypeTrendChart when LCD is active so it uses the filtered axis
+  const lcdChartTl = mergedLcdTl ? mergedLcdTl.filter(d => d.med != null) : null;
   function sliceTl(arr) {
     if (period === "1y") return arr.slice(-12);
     if (period === "3y") return arr.slice(-36);
@@ -1991,7 +2165,7 @@ function renderTownDashboard(townId) {
   }
   const periodTl = sliceTl(fullTl);
 
-  // Period-aware stats
+  // Period-aware stats — all from timeline (the only multi-period data source)
   const periodMedian = (() => {
     if (!periodTl.length) return s.median;
     const prices = periodTl.map(d => d.med).sort((a, b) => a - b);
@@ -2007,96 +2181,25 @@ function renderTownDashboard(townId) {
   const periodEnd   = periodTl.length ? fmtMonth(periodTl[periodTl.length - 1].m) : "";
 
   // Period-aware volume: sum block vol_by_year
+  const allBlocks = state.blocksByTown[townId] || [];
   const periodVol = (() => {
     if (!periodTl.length) return s.vol;
     const minY = parseInt(periodTl[0].m), maxY = parseInt(periodTl[periodTl.length - 1].m);
-    const blocks = state.blocksByTown[townId] || [];
     let v = 0;
-    for (const b of blocks) {
+    for (const b of allBlocks) {
       if (!b.vol_by_year) continue;
-      for (let y = minY; y <= maxY; y++) v += (b.vol_by_year[y] || 0);
+      for (let y = minY; y <= maxY; y++) v += (b.vol_by_year[String(y)] || 0);
     }
     return v || s.vol;
   })();
 
-  // Hide the legacy header
+  // Hide legacy header
   const legacyHeader = document.getElementById("townViewHeader");
   if (legacyHeader) legacyHeader.style.display = "none";
 
   const isTownStarred = _shortlist.has(townId);
 
-  // Period selector buttons
-  const periodBtns = ["1y","3y","5y","all"].map(p =>
-    `<button class="trends-period-btn${period === p ? " active" : ""}" onclick="setTownPeriod('${p}')">${p.toUpperCase()}</button>`
-  ).join("");
-
-  // Hero strip
-  const heroHtml = `<div class="town-hero">
-    <div class="town-hero-top">
-      <button class="town-hero-back" onclick="showView('map')">${Icons.back}</button>
-      <div class="town-hero-titles">
-        <div class="town-hero-eyebrow">${s.region} · HDB Town</div>
-        <div class="town-hero-name">${s.name}</div>
-        <div class="town-hero-region">${periodVol.toLocaleString()} transactions · ${periodLabel} view</div>
-      </div>
-      <div class="town-hero-actions">
-        <div class="trends-period-btns" style="margin-right:12px">${periodBtns}</div>
-        <button class="btn-secondary${isTownStarred ? " starred" : ""}" id="tdStarBtn"
-          onclick="_shortlist.toggle('${townId}'); updateShortlistUI(); this.classList.toggle('starred'); this.textContent = _shortlist.has('${townId}') ? '★ Saved' : '☆ Save to shortlist';">
-          ${isTownStarred ? "★ Saved" : "☆ Save to shortlist"}
-        </button>
-      </div>
-    </div>
-    <div class="town-strip">
-      <div class="town-strip-cell">
-        <div class="town-strip-lbl">Median price</div>
-        <div class="town-strip-val">${fmtKs(periodMedian)}</div>
-        <div class="town-strip-sub">${deltaPill(periodDpct)} ${periodLabel}</div>
-      </div>
-      <div class="town-strip-cell">
-        <div class="town-strip-lbl">$ / sqm</div>
-        <div class="town-strip-val">$${(s.ppsqm||0).toLocaleString()}</div>
-        <div class="town-strip-sub">last 3 months</div>
-      </div>
-      <div class="town-strip-cell">
-        <div class="town-strip-lbl">Transactions</div>
-        <div class="town-strip-val">${periodVol.toLocaleString()}</div>
-        <div class="town-strip-sub">${periodLabel} total</div>
-      </div>
-      <div class="town-strip-cell">
-        <div class="town-strip-lbl">Median lease</div>
-        <div class="town-strip-val">${s.med_lease ?? "—"}y</div>
-        <div class="town-strip-sub">
-          ${s.low_lease_pct > 30 ? `<span style="color:var(--amber)">${s.low_lease_pct}% &lt;60y</span>` : "remaining"}
-        </div>
-      </div>
-      <div class="town-strip-cell">
-        <div class="town-strip-lbl">Price band</div>
-        <div class="town-strip-val">
-          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${tierColor(periodMedian)};vertical-align:middle;margin-right:5px"></span>
-          ${tierLabel(periodMedian)}
-        </div>
-        <div class="town-strip-sub">vs national</div>
-      </div>
-    </div>
-  </div>`;
-
-  // Story callout (period-aware)
-  const bits = [];
-  if (periodDpct > 5) bits.push(`prices are up ${periodDpct.toFixed(1)}% over the ${periodLabel} window`);
-  else if (periodDpct < -2) bits.push(`prices have softened ${Math.abs(periodDpct).toFixed(1)}% over ${periodLabel}`);
-  else if (periodDpct != null) bits.push(`prices are roughly flat (${fmtPct(periodDpct)} over ${periodLabel})`);
-  if (s.velocity === "above") bits.push("transaction volume is running above its 12-month average");
-  else if (s.velocity === "below") bits.push("transaction volume is running below average");
-  if ((s.low_lease_pct||0) > 30) bits.push(`${s.low_lease_pct}% of recent sales had less than 60 years left on the lease`);
-  const storyText = bits.length ? `In <strong>${s.name}</strong>, ${bits.join(", ")}.` : null;
-  const storyHtml = storyText ? `<div class="story-callout">
-    <div>
-      <div class="story-callout-eyebrow">In a sentence</div>
-      <div class="story-callout-body">${storyText}</div>
-    </div>
-  </div>` : "";
-
+  // ── Shared helpers ────────────────────────────────────────────────────────
   function sectionHeader(num, title, sub) {
     return `<div class="town-section-header">
       <span class="town-section-num">0${num}</span>
@@ -2105,272 +2208,464 @@ function renderTownDashboard(townId) {
     </div>`;
   }
 
-  // Section 1: Snapshot — period-aware price trend
-  const sec1 = `
-    ${sectionHeader(1, "Snapshot", `${periodStart} – ${periodEnd}`)}
-    ${storyHtml}
-    <div class="td-card-hero td-col-7">
-      <div class="td-card-title">Price Trend <span class="td-card-note">${periodLabel} · Monthly median by flat type</span></div>
-      <div class="td-spark-wrap" id="townChartWrap">${buildTypeTrendChart(townId, 620, sliceTl)}</div>
-      <div style="display:flex;gap:18px;margin-top:6px;font-size:11px;color:var(--ink-3)">
-        <span>${periodStart}</span>
-        <span style="flex:1;text-align:center">—</span>
-        <span>${periodEnd}</span>
-      </div>
-    </div>
-    <div class="td-card td-col-5">
-      <div class="td-card-title">Quick Stats <span class="td-card-note">${periodLabel}</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px">
-        <div><div class="kpi-label">P25 — P75</div><div class="kpi-value" style="font-size:16px">${fmtKs(s.p25)}–${fmtKs(s.p75)}</div><div class="kpi-sub">Last 3-month range</div></div>
-        <div><div class="kpi-label">$ / sqm</div><div class="kpi-value" style="font-size:16px">$${(s.ppsqm||0).toLocaleString()}</div><div class="kpi-sub">Median, last 3 months</div></div>
-        <div><div class="kpi-label">Transactions</div><div class="kpi-value" style="font-size:16px">${periodVol.toLocaleString()}</div><div class="kpi-sub">${periodLabel} total</div></div>
-        <div><div class="kpi-label">Velocity</div><div class="kpi-value" style="font-size:16px;color:${s.velocity==="above"?"var(--green)":"var(--ink-3)"}">
-          ${s.velocity === "above" ? "Hot" : "Cool"}
-        </div><div class="kpi-sub">${s.velocity === "above" ? "Above 12mo avg" : "Below 12mo avg"}</div></div>
-      </div>
-    </div>`;
+  // ── Banner + inline filters ───────────────────────────────────────────────
+  const TD_FT_OPTIONS = ["ALL","2 ROOM","3 ROOM","4 ROOM","5 ROOM","EXECUTIVE"];
+  const lcdLoVal = lcdMin ?? 1960, lcdHiVal = lcdMax ?? 2025;
+  const lcdMn = 1960, lcdMx = 2025, lcdRange = lcdMx - lcdMn;
+  const lcdFillLeft  = ((lcdLoVal - lcdMn) / lcdRange * 100).toFixed(1);
+  const lcdFillRight = (100 - (lcdHiVal - lcdMn) / lcdRange * 100).toFixed(1);
 
-  // Section 2: Flat types + storey + price distribution
-  const ftOrder = ["2 ROOM","3 ROOM","4 ROOM","5 ROOM","EXECUTIVE","MULTI-GENERATION"];
-  const maxFtMed = Math.max(...Object.values(s.type_medians || {}), 1);
-  const scatByType = {};
-  (s.scatter || []).forEach(p => {
-    if (!scatByType[p.t]) scatByType[p.t] = [];
-    scatByType[p.t].push(p.y * 1000 / p.x);
-  });
-  const medPpsqm = ft => {
-    const arr = (scatByType[ft] || []).sort((a,b) => a-b);
-    if (!arr.length) return null;
-    return Math.round(arr[Math.floor(arr.length / 2)]);
-  };
-  const typeBreakdownHtml = ftOrder
-    .filter(ft => s.type_medians?.[ft])
-    .map(ft => {
-      const med2 = s.type_medians[ft];
-      const pct  = s.type_mix?.[ft] || 0;
-      const ppsqm2 = medPpsqm(ft);
-      const c    = TYPE_LINE_COLORS[ft] || "var(--accent)";
-      const barW = (med2 / maxFtMed * 100).toFixed(1);
-      const shortFt = ft.replace(" ROOM","‑Rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MultiGen");
-      return `<div class="td-ftb-row">
-        <span class="td-ftb-dot" style="background:${c}"></span>
-        <span class="td-ftb-label">${shortFt}</span>
-        <div class="td-ftb-bar-wrap"><div class="td-ftb-bar" style="width:${barW}%;background:${c}"></div></div>
-        <span class="td-ftb-med">${fmtKs(med2)}</span>
-        <span class="td-ftb-ppsqm">${ppsqm2 ? `$${ppsqm2.toLocaleString()}/m²` : "—"}</span>
-        <span class="td-ftb-pct">${pct}%</span>
-      </div>`;
-    }).join("") || `<div class="td-insuf">No flat type data</div>`;
+  // ── recent_txns filtered by flat type + LCD (no period — all txns are recent) ─
+  // recent_txns only spans the last 1-2 months, so period filter does nothing useful.
+  // Use for: median lease, storey premium, matching blocks display, recent txns table.
+  const allTxnsRaw = s.recent_txns || [];
+  let filtTxnsBase = allTxnsRaw;
+  if (flatType !== "ALL") filtTxnsBase = filtTxnsBase.filter(t => t.type === flatType);
+  if (lcdActive)          filtTxnsBase = filtTxnsBase.filter(t => t.lcd != null && Number(t.lcd) >= lcdLo && Number(t.lcd) <= lcdHi);
 
-  const storeyGridHtml = Object.keys(s.storey_meds || {}).length > 0
-    ? `<div class="storey-grid">${
-        [["low","Lower (1–6)"],["mid","Mid (7–12)"],["high","High (13+)"]].map(([k,lbl]) => {
-          const v = s.storey_meds[k];
-          if (!v) return "";
-          const base = s.storey_meds.low || v;
-          const prem = ((v - base) / base * 100);
-          return `<div class="storey-cell">
-            <div class="storey-cell-lbl">${lbl}</div>
-            <div class="storey-cell-val">${fmtKs(v)}</div>
-            ${k !== "low" && prem > 0 ? `<div class="storey-cell-prem">+${prem.toFixed(0)}% vs low</div>` : ""}
-          </div>`;
-        }).join("")
-      }</div>`
-    : `<div class="td-insuf">Insufficient data</div>`;
+  // ── $/sqm — median of per-month ppsqm across the period ─────────────────
+  // periodTl is already LCD-aware (from getMergedLcdTownTl when LCD active).
+  // When no LCD filter, use type-specific timeline for per-type accuracy.
+  const periodPpsqm = (() => {
+    let srcTl = periodTl;
+    if (!lcdActive && flatType !== "ALL") {
+      const ftFull = (DB.town_type_timelines?.[townId]?.[flatType] || []).filter(d => d.med != null);
+      srcTl = sliceTl(ftFull);
+    }
+    const vals = srcTl.map(d => d.ppsqm).filter(v => v != null).sort((a, b) => a - b);
+    return vals.length ? vals[Math.floor(vals.length / 2)] : (s.ppsqm || 0);
+  })();
 
-  const dist   = s.price_dist || [];
-  const dlbls  = s.dist_labels || [];
-  const maxDist = Math.max(...dist, 1);
-  const distBarsHtml = dist.map((v, i) => {
-    const bh = Math.max(2, (v / maxDist) * 48);
-    const hi = v === Math.max(...dist);
-    return `<div class="td-dist-bar-col">
-      <div class="td-dist-bar" style="height:${bh}px;background:${hi ? "var(--accent)" : "var(--surface-3)"}" title="${dlbls[i]}: ${v} txns"></div>
-      <div class="td-dist-lbl">${(dlbls[i] || "").replace("$","").replace("k","")}</div>
-    </div>`;
-  }).join("");
-
-  const sec2 = `
-    ${sectionHeader(2, "What you can buy here", "Median price by flat type")}
-    <div class="td-card td-col-7">
-      <div class="td-card-title">Flat Type Breakdown <span class="td-card-note">last 12 months</span></div>
-      ${typeBreakdownHtml}
-    </div>
-    <div class="td-card td-col-5">
-      <div class="td-card-title">Storey Premium <span class="td-card-note">Median by floor band</span></div>
-      ${storeyGridHtml}
-    </div>
-    <div class="td-card td-col-12">
-      <div class="td-card-title">Price Distribution <span class="td-card-note">${s.vol} transactions in the last 3 months</span></div>
-      <div class="td-dist-chart td-dist-chart--slim">${distBarsHtml}</div>
-    </div>`;
-
-  // Section 3: Blocks table (with LCD year + age) + similar towns
-  const allBlocks = state.blocksByTown[townId] || [];
-
-  // Period-filtered block volume
+  // ── Block filtering (LCD + decade + flat type via recent_txns) ──────────
   const minPY = periodTl.length ? parseInt(periodTl[0].m) : 0;
-  const maxPY = periodTl.length ? parseInt(periodTl[periodTl.length-1].m) : 9999;
-  const blocksWithVol = allBlocks.map(b => {
+  const maxPY = periodTl.length ? parseInt(periodTl[periodTl.length - 1].m) : 9999;
+
+  // Blocks that had txns for the selected flat type (from recent_txns)
+  const blocksWithFtTxns = flatType !== "ALL"
+    ? new Set(allTxnsRaw.filter(t => t.type === flatType).map(t => `${t.block}|${t.street}`))
+    : null;
+
+  let filteredBlocks = allBlocks.map(b => {
     let vol = 0;
     if (b.vol_by_year) {
-      for (let y = minPY; y <= maxPY; y++) vol += (b.vol_by_year[y] || 0);
+      for (let y = minPY; y <= maxPY; y++) vol += (b.vol_by_year[String(y)] || 0);
     } else {
       vol = b.vol || 0;
     }
-    const lcdYear = b.lcd ? Number(b.lcd) : null;
-    const buildingAge = lcdYear ? (new Date().getFullYear() - lcdYear) : null;
-    return { ...b, periodVol: vol, lcdYear, buildingAge };
-  }).filter(b => b.periodVol > 0).sort((a, b) => b.periodVol - a.periodVol);
+    const lcdYear  = b.lcd ? Number(b.lcd) : null;
+    const remLease = lcdYear ? (99 - (2026 - lcdYear)) : null;
+    return { ...b, periodVol: vol, lcdYear, remLease };
+  });
+  if (lcdActive) {
+    filteredBlocks = filteredBlocks.filter(b => b.lcdYear != null && b.lcdYear >= lcdLo && b.lcdYear <= lcdHi);
+  }
+  if (_decadeFilter != null) {
+    filteredBlocks = filteredBlocks.filter(b => b.lcdYear != null && Math.floor(b.lcdYear / 10) * 10 === _decadeFilter);
+  }
+  if (blocksWithFtTxns) {
+    filteredBlocks = filteredBlocks.filter(b => blocksWithFtTxns.has(`${b.block}|${b.street}`));
+  }
+  const uniqueBlockCount = filteredBlocks.length;
 
-  const topBlocks = blocksWithVol.slice(0, 15);
+  // Period-aware median lease: from periodTl (already LCD-aware when filter active)
+  const periodMedLease = (() => {
+    const vals = periodTl.map(d => d.med_lease).filter(v => v != null).sort((a, b) => a - b);
+    return vals.length ? vals[Math.floor(vals.length / 2)] : s.med_lease;
+  })();
+  const leaseColor = (periodMedLease ?? 99) >= 70 ? "var(--green)"
+    : (periodMedLease ?? 99) >= 50 ? "var(--amber)" : "var(--red)";
 
-  const blocksTableHtml = topBlocks.length === 0
-    ? `<div class="td-insuf">No transactions in selected period</div>`
-    : `<div class="td-blocks-table-wrap">
-      <table class="td-blocks-table">
-        <thead><tr>
-          <th>Block</th><th>Street</th>
-          <th class="num">Built</th><th class="num">Age</th>
-          <th class="num">Txns</th><th class="num" style="text-align:right">Median</th><th></th>
-        </tr></thead>
-        <tbody>${topBlocks.map(b => {
-          const blockKey = `${townId}|${b.block}|${b.street}`;
-          const bkEsc = blockKey.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-          const isStar = _shortlist.has(blockKey);
-          const ageStr = b.buildingAge != null ? `${b.buildingAge}y` : "—";
-          const lcdStr = b.lcdYear != null ? String(b.lcdYear) : "—";
-          const ageColor = b.buildingAge != null && b.buildingAge > 35
-            ? "var(--amber)" : b.buildingAge != null && b.buildingAge > 20
-            ? "var(--ink-2)" : "var(--green)";
-          return `<tr>
-            <td class="num mono">${b.block}</td>
-            <td style="font-size:11px;color:var(--ink-2)">${b.street}</td>
-            <td class="num mono" style="color:var(--ink-2)">${lcdStr}</td>
-            <td class="num" style="color:${ageColor};font-weight:700">${ageStr}</td>
-            <td class="num">${b.periodVol}</td>
-            <td class="num" style="text-align:right;font-weight:700">${fmtKs(b.med)}</td>
-            <td><button class="block-star-btn${isStar ? " starred" : ""}"
-              onclick="_shortlist.toggle('${bkEsc}'); this.classList.toggle('starred'); updateShortlistUI();" title="Shortlist">★</button></td>
-          </tr>`;
-        }).join("")}</tbody>
-      </table>
+  // IQR and velocity — needed in hero strip
+  // P25/P75 from period timeline (period + type aware)
+  const periodP25 = periodTl.length >= 4
+    ? (() => { const v = periodTl.map(d => d.med).sort((a,b)=>a-b); return v[Math.floor(v.length*0.25)]; })()
+    : s.p25;
+  const periodP75 = periodTl.length >= 4
+    ? (() => { const v = periodTl.map(d => d.med).sort((a,b)=>a-b); return v[Math.floor(v.length*0.75)]; })()
+    : s.p75;
+  // Velocity: from periodTl (timeline) — period-aware and type-aware
+  const allTimeTl = rawTl.filter(d => d.med != null);
+  const avgMonthlyAllTime = allTimeTl.length
+    ? allTimeTl.reduce((s2, d) => s2 + (d.vol || 0), 0) / allTimeTl.length
+    : 0;
+  const avgMonthlyPeriod = periodTl.length
+    ? periodTl.reduce((s2, d) => s2 + (d.vol || 0), 0) / periodTl.length
+    : 0;
+  const periodVelocity = avgMonthlyAllTime > 0
+    ? (avgMonthlyPeriod >= avgMonthlyAllTime * 1.05 ? "above" : avgMonthlyPeriod <= avgMonthlyAllTime * 0.95 ? "below" : "average")
+    : s.velocity;
+
+  const heroHtml = `<div class="town-hero">
+    <div class="town-hero-top">
+      <button class="town-hero-back" onclick="showView('map')">${Icons.back}</button>
+      <div class="town-hero-titles">
+        <div class="town-hero-eyebrow">${s.region} · HDB Town</div>
+        <div class="town-hero-name">${s.name}</div>
+        <div class="town-hero-region">${periodVol.toLocaleString()} transactions · ${periodLabel}${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}${lcdActive ? " · Built " + lcdLoVal + "–" + lcdHiVal : ""}</div>
+      </div>
+      <button class="btn-secondary${isTownStarred ? " starred" : ""}" id="tdStarBtn"
+        onclick="_shortlist.toggle('${townId}'); updateShortlistUI(); this.classList.toggle('starred'); this.textContent = _shortlist.has('${townId}') ? '★ Saved' : '☆ Save';">
+        ${isTownStarred ? "★ Saved" : "☆ Save"}
+      </button>
+    </div>
+    <div class="town-hero-bottom">
+      <div class="town-strip town-strip--6">
+        <div class="town-strip-cell">
+          <div class="town-strip-lbl">Median price</div>
+          <div class="town-strip-val">${fmtKs(periodMedian)}</div>
+          <div class="town-strip-sub">${deltaPill(periodDpct)} ${periodLabel}</div>
+        </div>
+        <div class="town-strip-cell" data-tip="Middle 50% price range across monthly medians in the ${periodLabel} window">
+          <div class="town-strip-lbl">P25 – P75</div>
+          <div class="town-strip-val" style="font-size:16px">${fmtKs(periodP25)} – ${fmtKs(periodP75)}</div>
+          <div class="town-strip-sub">${periodLabel} spread</div>
+        </div>
+        <div class="town-strip-cell" data-tip="Median $/sqm · ${flatType !== 'ALL' ? flatType + ' · ' : ''}${periodLabel} period">
+          <div class="town-strip-lbl">$ / sqm</div>
+          <div class="town-strip-val">$${periodPpsqm.toLocaleString()}</div>
+          <div class="town-strip-sub">${flatType !== 'ALL' ? flatType.replace(' ROOM',' Rm').replace('EXECUTIVE','Exec') : 'all types'}</div>
+        </div>
+        <div class="town-strip-cell" data-tip="Median remaining lease · ${periodLabel} period${lcdActive ? ', lease commenced ' + lcdLoVal + '–' + lcdHiVal : ''}">
+          <div class="town-strip-lbl">Median lease</div>
+          <div class="town-strip-val" style="color:${leaseColor}">${periodMedLease ?? "—"}y</div>
+          <div class="town-strip-sub" style="color:${(s.low_lease_pct||0) > 30 ? "var(--amber)" : "var(--ink-3)"}">
+            ${(s.low_lease_pct||0) > 30 ? s.low_lease_pct + "% &lt;60y" : "remaining"}
+          </div>
+        </div>
+        <div class="town-strip-cell" data-tip="Unique blocks matching current filters${lcdActive ? ' · built ' + lcdLoVal + '–' + lcdHiVal : ''}${_decadeFilter != null ? ' · ' + _decadeFilter + 's only' : ''}">
+          <div class="town-strip-lbl">Matching blocks</div>
+          <div class="town-strip-val">${uniqueBlockCount}</div>
+          <div class="town-strip-sub" style="color:var(--ink-3)">${lcdActive || _decadeFilter != null ? "filtered" : "all in town"}</div>
+        </div>
+        <div class="town-strip-cell" data-tip="${periodVelocity === 'above' ? 'Monthly volume above long-run average — more active than usual' : periodVelocity === 'below' ? 'Monthly volume below long-run average — quieter than usual' : 'Monthly volume near long-run average'}">
+          <div class="town-strip-lbl">Velocity</div>
+          <div class="town-strip-val" style="font-size:18px;color:${periodVelocity === 'above' ? 'var(--green)' : periodVelocity === 'below' ? 'var(--red)' : 'var(--ink-3)'}">${periodVelocity === 'above' ? 'Hot' : periodVelocity === 'below' ? 'Cool' : 'Avg'}</div>
+          <div class="town-strip-sub">${periodVelocity === 'above' ? 'Above avg' : periodVelocity === 'below' ? 'Below avg' : 'On average'}</div>
+        </div>
+      </div>
+      <div class="td-hero-filters">
+        <div class="td-hf-group">
+          <div class="td-hf-label">Period</div>
+          <div class="trends-period-btns">
+            ${["1y","3y","5y","all"].map(p =>
+              `<button class="trends-period-btn${period===p?" active":""}" onclick="setTownPeriod('${p}')">${p.toUpperCase()}</button>`
+            ).join("")}
+          </div>
+        </div>
+        <div class="td-hf-group">
+          <div class="td-hf-label">Flat type</div>
+          <div class="trends-type-btns">
+            ${TD_FT_OPTIONS.map(ft => {
+              const lbl = ft === "ALL" ? "All" : ft.replace(" ROOM","Rm").replace("EXECUTIVE","Exec");
+              return `<button class="trends-type-btn${flatType===ft?" active":""}" onclick="setTownFlatType('${ft}')">${lbl}</button>`;
+            }).join("")}
+          </div>
+        </div>
+        <div class="td-hf-group td-hf-group--lcd">
+          <div class="td-hf-label">
+            Lease Commencement Date ${lcdActive ? `<button class="td-lcd-reset" onclick="tdLcdReset()">✕</button>` : ""}
+          </div>
+          <div class="td-lcd-slider-wrap">
+            <div class="td-lcd-track">
+              <div class="td-lcd-fill" id="tdLcdFill" style="left:${lcdFillLeft}%;right:${lcdFillRight}%"></div>
+            </div>
+            <input type="range" class="td-lcd-range td-lcd-range--lo" id="tdLcdLo"
+              min="${lcdMn}" max="${lcdMx}" value="${lcdLoVal}"
+              oninput="tdLcdInput()" onchange="tdLcdCommit()">
+            <input type="range" class="td-lcd-range td-lcd-range--hi" id="tdLcdHi"
+              min="${lcdMn}" max="${lcdMx}" value="${lcdHiVal}"
+              oninput="tdLcdInput()" onchange="tdLcdCommit()">
+          </div>
+          <div class="td-lcd-label" id="tdLcdLabel">${lcdLoVal} – ${lcdHiVal}</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  // ── Story callout ─────────────────────────────────────────────────────────
+  const bits = [];
+  const ftQual = flatType !== "ALL" ? flatType.replace(" ROOM"," room").replace("EXECUTIVE","executive") + " flats" : "prices";
+  if (periodDpct > 5) bits.push(`${ftQual} are up ${periodDpct.toFixed(1)}% over the ${periodLabel} window`);
+  else if (periodDpct < -2) bits.push(`${ftQual} have softened ${Math.abs(periodDpct).toFixed(1)}% over ${periodLabel}`);
+  else bits.push(`${ftQual} are roughly flat (${fmtPct(periodDpct)} over ${periodLabel})`);
+  if (s.velocity === "above") bits.push("transaction volume is running above its 12-month average");
+  else if (s.velocity === "below") bits.push("transaction volume is running below average");
+  if ((s.low_lease_pct||0) > 30) bits.push(`${s.low_lease_pct}% of recent sales had less than 60 years left on the lease`);
+  if (lcdActive) bits.push(`showing blocks with lease commencement ${lcdLoVal}–${lcdHiVal}`);
+  const storyText = `In <strong>${s.name}</strong>, ${bits.join(", ")}.`;
+  const storyHtml = `<div class="story-callout td-col-12">
+    <div class="story-callout-eyebrow">In a sentence</div>
+    <div class="story-callout-body">${storyText}</div>
+  </div>`;
+
+  // ── Flat type breakdown — period + LCD aware ─────────────────────────────
+  const ftOrder = ["2 ROOM","3 ROOM","4 ROOM","5 ROOM","EXECUTIVE","MULTI-GENERATION"];
+  const typeTlAll = DB.town_type_timelines?.[townId] ?? {};
+
+  const ftStats = {};
+  let totalFtVol = 0;
+
+  if (lcdActive) {
+    // LCD active: use town_type_lcd_stats aggregated by overlapping bands
+    // Merge bands that overlap [lcdLo, lcdHi]
+    const typeLcdData = DB.town_type_lcd_stats?.[townId] ?? {};
+    ftOrder.forEach(ft => {
+      const bandMap = typeLcdData[ft] || {};
+      const activeBands = Object.entries(bandMap).filter(([k]) => {
+        const bs = parseInt(k); return bs + 4 >= lcdLo && bs <= lcdHi;
+      });
+      if (!activeBands.length) { ftStats[ft] = null; return; }
+      // Merge bands: volume-weighted median
+      let totalVol = 0, wtMed = 0, wtPpsqm = 0, ppsqmVol = 0;
+      for (const [, d] of activeBands) {
+        totalVol += d.vol;
+        wtMed    += d.med * d.vol;
+        if (d.ppsqm) { wtPpsqm += d.ppsqm * d.vol; ppsqmVol += d.vol; }
+      }
+      totalFtVol += totalVol;
+      const med    = totalVol ? wtMed / totalVol : null;
+      const ppsqm  = ppsqmVol ? Math.round(wtPpsqm / ppsqmVol) : null;
+      if (med == null) { ftStats[ft] = null; return; }
+      ftStats[ft] = { med: Math.round(med * 10) / 10, ppsqm, vol: totalVol };
+    });
+  } else {
+    // No LCD filter: use town_type_timelines sliced by period
+    ftOrder.forEach(ft => {
+      const ftFull = (typeTlAll[ft] || []).filter(d => d.med != null);
+      const ftSlice = sliceTl(ftFull);
+      if (!ftSlice.length) { ftStats[ft] = null; return; }
+      const meds  = ftSlice.map(d => d.med).sort((a, b) => a - b);
+      const vol   = ftSlice.reduce((sum, d) => sum + (d.vol || 0), 0);
+      totalFtVol += vol;
+      const ppsqmMonths = ftSlice.map(d => d.ppsqm).filter(v => v != null).sort((a, b) => a - b);
+      const ppsqm = ppsqmMonths.length ? ppsqmMonths[Math.floor(ppsqmMonths.length / 2)] : null;
+      ftStats[ft] = { med: meds[Math.floor(meds.length / 2)], ppsqm, vol };
+    });
+  }
+  // % share from period vol
+  ftOrder.forEach(ft => { if (ftStats[ft]) ftStats[ft].pct = totalFtVol > 0 ? Math.round(ftStats[ft].vol / totalFtVol * 100) : 0; });
+
+  // Fallback to prebuilt when no timeline data
+  const ftStatsOf = ft => ftStats[ft] || (s.type_medians?.[ft]
+    ? { med: s.type_medians[ft], ppsqm: null, pct: Math.round(s.type_mix?.[ft] || 0) }
+    : null);
+
+  const maxFtMed = Math.max(...ftOrder.map(ft => ftStatsOf(ft)?.med || 0), 1);
+
+  const typeBreakdownHtml = ftOrder
+    .filter(ft => ftStatsOf(ft))
+    .map(ft => {
+      const fs    = ftStatsOf(ft);
+      const c     = TYPE_LINE_COLORS[ft] || "var(--accent)";
+      const barW  = (fs.med / maxFtMed * 100).toFixed(1);
+      const short = ft.replace(" ROOM","‑Rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MultiGen");
+      const active = flatType === ft;
+      return `<div class="td-ftb-row${active ? " td-ftb-row--active" : ""}" onclick="setTownFlatType('${active ? "ALL" : ft}')">
+        <span class="td-ftb-dot" style="background:${c}"></span>
+        <span class="td-ftb-label">${short}</span>
+        <div class="td-ftb-bar-wrap"><div class="td-ftb-bar" style="width:${barW}%;background:${c}"></div></div>
+        <span class="td-ftb-med">${fmtKs(fs.med)}</span>
+        <span class="td-ftb-ppsqm">${fs.ppsqm ? "$" + fs.ppsqm.toLocaleString() + "/m²" : "—"}</span>
+        <span class="td-ftb-pct">${fs.pct}%</span>
+      </div>`;
+    }).join("") || `<div class="td-insuf">No flat type data</div>`;
+
+  // ── Storey premium — period-aware from periodTl (already LCD-aware) ──────
+  const storeyGridHtml = (() => {
+    const medOf = key => {
+      const vals = periodTl.map(d => d[key]).filter(v => v != null).sort((a, b) => a - b);
+      return vals.length ? vals[Math.floor(vals.length / 2)] : null;
+    };
+    const vals = { low: medOf("storey_low"), mid: medOf("storey_mid"), high: medOf("storey_high") };
+    const hasData = Object.values(vals).some(v => v != null);
+    const sm = hasData ? vals : (s.storey_meds || {});
+    if (!Object.values(sm).some(v => v != null)) return `<div class="td-insuf" style="font-size:11px">No storey data</div>`;
+    return `<div class="storey-grid storey-grid--compact">${
+      [["low","Low 1–6"],["mid","Mid 7–12"],["high","High 13+"]].map(([k, lbl]) => {
+        const v = sm[k]; if (!v) return "";
+        const base = sm.low || v;
+        const prem = ((v - base) / base * 100);
+        return `<div class="storey-cell storey-cell--sm">
+          <div class="storey-cell-lbl">${lbl}</div>
+          <div class="storey-cell-val">${fmtKs(v)}</div>
+          ${k !== "low" && prem > 0 ? `<div class="storey-cell-prem">+${prem.toFixed(0)}%</div>` : ""}
+        </div>`;
+      }).join("")
+    }</div>`;
+  })();
+
+  const sec1 = `
+    ${sectionHeader(1, "Snapshot", `${periodStart} – ${periodEnd}`)}
+    ${storyHtml}
+    <div class="td-card-hero td-col-12">
+      <div class="td-chart-type-layout">
+        <div class="td-chart-panel">
+          <div class="td-card-title">Price Trend <span class="td-card-note">${periodLabel}${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}</span></div>
+          <div class="td-spark-wrap" id="townChartWrap">${buildTypeTrendChart(townId, 620, sliceTl, lcdChartTl)}</div>
+        </div>
+        <div class="td-type-panel">
+          <div class="td-card-title">By flat type <span class="td-card-note">click to filter</span></div>
+          <div class="td-ftb-header">
+            <span></span><span></span><span></span>
+            <span class="td-ftb-col-hdr">Median</span>
+            <span class="td-ftb-col-hdr">$/m²</span>
+            <span class="td-ftb-col-hdr">% sales</span>
+          </div>
+          ${typeBreakdownHtml}
+          <div class="td-type-panel-divider">Storey premium <span style="font-size:10px;color:var(--ink-3);font-weight:400">${flatType !== "ALL" ? flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : "all types"} · filter-aware</span></div>
+          ${storeyGridHtml}
+        </div>
+      </div>
     </div>`;
+
+  const sec2 = "";
+
+  // ── Section 3: Blocks + similar towns ────────────────────────────────────
+  // Show ALL blocks (including 0-txn), sorted: txns desc, then by LCD desc
+  const allFilteredBlocks = filteredBlocks.sort((a, b) => {
+    if (b.periodVol !== a.periodVol) return b.periodVol - a.periodVol;
+    if (a.lcdYear != null && b.lcdYear != null) return b.lcdYear - a.lcdYear;
+    return 0;
+  });
+
+  const decadeFilterBanner = _decadeFilter != null
+    ? `<div class="td-decade-filter-banner">
+        Showing blocks built in the ${_decadeFilter}s
+        <button onclick="tdClearDecadeFilter()">✕ clear</button>
+       </div>`
+    : "";
+
+  const blocksShown = _txnShown || 30;
+  const blocksSlice = allFilteredBlocks.slice(0, blocksShown);
+  const blocksShowMoreBtn = allFilteredBlocks.length > blocksShown
+    ? `<div style="text-align:center;padding:10px 0">
+        <button class="btn-secondary" onclick="tdShowMoreTxns()">Show more (${allFilteredBlocks.length - blocksShown} more blocks)</button>
+       </div>`
+    : "";
+
+  const blocksTableHtml = allFilteredBlocks.length === 0
+    ? `<div class="td-insuf">No blocks${lcdActive || _decadeFilter != null ? " matching current filters" : ""}</div>`
+    : `<div class="td-blocks-table-wrap">
+        ${decadeFilterBanner}
+        <div class="td-blocks-search-wrap">
+          <input class="td-blocks-search" id="tdBlockSearch" placeholder="Search block or street…" oninput="tdFilterBlocks()">
+        </div>
+        <table class="td-blocks-table">
+          <thead><tr>
+            <th>Block</th><th>Street</th>
+            <th class="num" data-tip="Year lease commenced">Built</th>
+            <th class="num" data-tip="Remaining lease years (approx)">Lease left</th>
+            <th class="num">${periodLabel} txns</th>
+            <th class="num" style="text-align:right">Median</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${blocksSlice.map(b => {
+            const blockKey = `${townId}|${b.block}|${b.street}`;
+            const bkEsc    = blockKey.replace(/'/g, "\\'");
+            const isStar   = _shortlist.has(blockKey);
+            const lcdStr   = b.lcdYear != null ? String(b.lcdYear) : "—";
+            const leaseStr = b.remLease != null ? b.remLease + "y" : "—";
+            const leaseCol = b.remLease != null && b.remLease < 60 ? "var(--red)"
+              : b.remLease != null && b.remLease < 75 ? "var(--amber)" : "var(--green)";
+            const searchStr = `${b.block} ${b.street}`.toLowerCase();
+            const medStr = b.med ? fmtKs(b.med) : "—";
+            const txnStyle = b.periodVol === 0 ? "color:var(--ink-3)" : "";
+            return `<tr class="td-block-row" data-search="${searchStr}">
+              <td class="num mono">${b.block}</td>
+              <td style="font-size:11px;color:var(--ink-2)">${b.street}</td>
+              <td class="num mono" style="color:var(--ink-2)">${lcdStr}</td>
+              <td class="num" style="color:${leaseCol};font-weight:700">${leaseStr}</td>
+              <td class="num" style="${txnStyle}">${b.periodVol || "—"}</td>
+              <td class="num" style="text-align:right;font-weight:700">${medStr}</td>
+              <td><button class="block-star-btn${isStar ? " starred" : ""}"
+                onclick="_shortlist.toggle('${bkEsc}'); this.classList.toggle('starred'); updateShortlistUI();" title="Shortlist">★</button></td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table>
+        ${blocksShowMoreBtn}
+      </div>`;
 
   const med = periodMedian;
   const comparable = DB.towns
     .filter(id => id !== townId)
     .map(id => ({ id, cs: DB.town_summaries[id] }))
-    .filter(({ cs }) => cs && cs.median && Math.abs(cs.median - med) / med <= 0.15)
+    .filter(({ cs }) => cs && cs.median && Math.abs(cs.median - med) / med <= 0.20)
     .sort((a, b) => Math.abs(a.cs.median - med) - Math.abs(b.cs.median - med))
-    .slice(0, 5);
+    .slice(0, 3);
+
   const simTownsHtml = comparable.length
     ? comparable.map(({ id, cs }) => {
-        const diff = cs.median - med;
+        const diff     = Math.round((cs.median - med) * 10) / 10;
+        const ppsqmSim = cs.ppsqm || 0;
         return `<div class="sim-town-row" onclick="openTownDashboard('${id}')">
-          <div>
+          <div style="flex:1;min-width:0">
             <div class="block-row-name">${cs.name}</div>
-            <div class="block-row-street">${cs.region}</div>
+            <div class="block-row-street">${cs.region} · ${cs.med_lease ?? "?"}y lease · $${ppsqmSim.toLocaleString()}/m²</div>
           </div>
-          <span class="block-row-vol">${(cs.vol_12m||0).toLocaleString()}/12mo</span>
           <span class="block-row-med">${fmtKs(cs.median)}</span>
-          <span style="font-size:11px;font-weight:700;color:${diff > 0 ? "var(--red)" : "var(--green)"};width:50px;text-align:right">${diff > 0 ? "+" : "−"}$${Math.abs(diff)}k</span>
+          <span style="font-size:11px;font-weight:700;color:${diff > 0 ? "var(--red)" : "var(--green)"};width:54px;text-align:right;flex-shrink:0">${diff > 0 ? "+" : ""}$${diff}k</span>
         </div>`;
       }).join("")
-    : `<div style="font-size:12px;color:var(--ink-3)">No comparable towns within ±15% median.</div>`;
+    : `<div style="font-size:12px;color:var(--ink-3)">No comparable towns within ±20% median.</div>`;
 
   const sec3 = `
-    ${sectionHeader(3, "Active blocks", `${periodLabel} · Top ${topBlocks.length} by volume`)}
-    <div class="td-card td-col-7">
-      <div class="td-card-title">Blocks with Transactions <span class="td-card-note">Built year, age, ${periodLabel} vol · ★ to shortlist</span></div>
+    ${sectionHeader(2, "Where people are buying", `${allFilteredBlocks.length} blocks${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}${lcdActive ? " · built " + lcdLoVal + "–" + lcdHiVal : ""}`)}
+    <div class="td-card td-col-7 td-card--equal-height">
+      <div class="td-card-title">All Blocks
+        <span class="td-card-note">txns desc · ★ to shortlist</span>
+        ${flatType !== "ALL" ? `<span class="td-filter-badge">${flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec")}</span>` : ""}
+        ${lcdActive ? `<span class="td-filter-badge">Built ${lcdLoVal}–${lcdHiVal}</span>` : ""}
+        ${_decadeFilter != null ? `<span class="td-filter-badge">${_decadeFilter}s</span>` : ""}
+      </div>
       ${blocksTableHtml}
     </div>
-    <div class="td-card td-col-5">
+    <div class="td-card td-col-5 td-card--equal-height td-similar-col">
       <div class="td-card-title">Similar towns <span class="td-card-note">Closest median price</span></div>
       ${simTownsHtml}
-      <div id="tdMiniMapWrap" style="margin-top:12px;border-radius:var(--r-sm);overflow:hidden;height:140px"></div>
+      <div id="tdMiniMapWrap" style="margin-top:12px;border-radius:var(--r-sm);overflow:hidden;min-height:160px;flex:1"></div>
     </div>`;
 
-  // Section 4: Stock by Commencement Decade
-  const decadeMap = {};
-  for (const b of allBlocks) {
-    if (!b.lcd) continue;
-    const decade = Math.floor(Number(b.lcd) / 10) * 10;
-    if (!decadeMap[decade]) decadeMap[decade] = { count: 0, blocks: [] };
-    decadeMap[decade].count++;
-    decadeMap[decade].blocks.push(b);
-  }
-  const decades = Object.keys(decadeMap).map(Number).sort((a, b) => a - b);
-  const maxDecadeCount = Math.max(...decades.map(d => decadeMap[d].count), 1);
-
-  let decadeHtml = "";
-  if (decades.length === 0) {
-    decadeHtml = `<div class="td-insuf">No commencement year data available</div>`;
-  } else {
-    decadeHtml = `<div class="td-decade-chart">${decades.map(d => {
-      const info = decadeMap[d];
-      const barW = (info.count / maxDecadeCount * 100).toFixed(1);
-      const age = new Date().getFullYear() - d;
-      const ageColor = age > 35 ? "var(--amber)" : age > 20 ? "var(--accent)" : "var(--green)";
-      const leaseTip = `Built ~${d}s — approx ${99 - age}y lease remaining`;
-      return `<div class="td-decade-row">
-        <div class="td-decade-lbl">${d}s</div>
-        <div class="td-decade-bar-wrap">
-          <div class="td-decade-bar" style="width:${barW}%;background:${ageColor}" title="${leaseTip}"></div>
-        </div>
-        <div class="td-decade-count">${info.count} blks</div>
-        <div class="td-decade-lease" style="color:${ageColor}">~${99 - age}y left</div>
-      </div>`;
-    }).join("")}</div>`;
-  }
-
-  const leaseNote = (s.low_lease_pct||0) > 50
-    ? `This is a <strong style="color:var(--amber)">mature estate</strong> — most recent sales are older flats. Lease decay is a key value driver here.`
-    : (s.low_lease_pct||0) > 20
-    ? `Mixed lease profile. Some blocks are older, some recently launched. Compare lease before bidding.`
-    : `Healthy lease profile: most flats here have <strong style="color:var(--green)">plenty of years left</strong>. Easier to secure financing.`;
-
-  const sec4 = `
-    ${sectionHeader(4, "Building stock by decade", "Commencement year of blocks in this town")}
-    <div class="td-card td-col-7">
-      <div class="td-card-title">Blocks by Commencement Decade <span class="td-card-note">${allBlocks.filter(b => b.lcdYear).length} blocks with data</span></div>
-      ${decadeHtml}
-    </div>
-    <div class="td-card td-col-5">
-      <div class="td-card-title">Lease Health Note</div>
-      <p style="font-size:13px;color:var(--ink-2);line-height:1.6;margin:8px 0">${leaseNote}</p>
-      <div style="margin-top:12px;padding:10px;background:var(--surface-2);border-radius:var(--r-sm);font-size:12px;color:var(--ink-2)">
-        <div style="font-weight:700;color:var(--ink);margin-bottom:4px">Loan eligibility rule of thumb</div>
-        HDB requires remaining lease to cover the youngest buyer to age 95. Blocks built in the ${decades[0] || "1970"}s may restrict CPF usage and bank financing.
-      </div>
-    </div>`;
-
-  // Section 5: Recent transactions (full width, 15 rows)
-  const txnRows = (s.recent_txns || []).slice(0, 15).map(t => {
-    const low = t.lease_yrs != null && t.lease_yrs < 60;
+  // ── Section 3: Recent transactions (filter-aware) ────────────────────────
+  const shown    = 20;
+  const allTxns  = filtTxnsBase; // already filtered by flatType + LCD
+  const txnSlice = allTxns.slice(0, shown);
+  const txnRows = txnSlice.map(t => {
+    const low   = t.lease_yrs != null && t.lease_yrs < 60;
+    const ppsqm = t.floor_area_sqm ? Math.round((t.price / 1000) / t.floor_area_sqm * 1000) : null;
+    const storeyBand = (() => {
+      if (!t.storey) return t.storey;
+      const parts = String(t.storey).split(" TO ").map(Number);
+      const avg = parts.reduce((a, b) => a + b, 0) / parts.length;
+      if (avg <= 6)  return `<span data-tip="${t.storey}">Low</span>`;
+      if (avg <= 12) return `<span data-tip="${t.storey}">Mid</span>`;
+      return `<span data-tip="${t.storey}">High</span>`;
+    })();
     return `<tr>
       <td class="num">${fmtMonth(t.month)}</td>
       <td><span class="txn-block-link">Blk ${t.block}</span></td>
       <td>${t.type.replace(" ROOM","rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MG")}</td>
-      <td class="num">${t.storey}</td>
-      <td class="num">${t.lease_yrs != null ? t.lease_yrs+"y" : "—"}${low ? ` <span class="td-low-lease-badge">Short</span>` : ""}</td>
+      <td class="num">${storeyBand}</td>
+      <td class="num" style="color:${low ? "var(--amber)" : "var(--ink-2)"}">
+        ${t.lease_yrs != null ? t.lease_yrs + "y" : "—"}${low ? ` <span class="td-low-lease-badge" data-tip="Less than 60 years remaining — CPF restrictions may apply">Short</span>` : ""}
+      </td>
+      ${ppsqm ? `<td class="num" style="color:var(--ink-2)">$${ppsqm.toLocaleString()}/m²</td>` : "<td></td>"}
       <td class="txn-price">${fmtKs(Math.round(t.price / 1000))}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="6" class="empty-state">No recent transactions</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="empty-state">No recent transactions</td></tr>`;
 
-  const sec5 = `
-    ${sectionHeader(5, "Recent transactions", `Latest ${Math.min(15,(s.recent_txns||[]).length)} sales`)}
+  const sec4 = `
+    ${sectionHeader(3, "Recent transactions", `Latest ${txnSlice.length} of ${allTxns.length} sales${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}`)}
     <div class="td-card td-col-12">
-      <div class="td-card-title">Recent Transactions <span class="td-card-note">latest ${Math.min(15,(s.recent_txns||[]).length)} sales</span></div>
-      <div style="overflow:auto;max-height:480px">
+      <div class="td-card-title">Recent Transactions <span class="td-card-note">most recent first</span></div>
+      <div style="overflow:auto;max-height:520px">
         <table class="txn-table">
-          <thead><tr><th>Month</th><th>Blk</th><th>Type</th><th>Storey</th><th>Lease</th><th style="text-align:right">Price</th></tr></thead>
+          <thead><tr><th>Month</th><th>Block</th><th>Type</th><th>Storey</th><th>Lease</th><th>$/m²</th><th>Price</th></tr></thead>
           <tbody>${txnRows}</tbody>
         </table>
       </div>
     </div>`;
 
-  // Write header
+  // ── Render ────────────────────────────────────────────────────────────────
   document.getElementById("townViewTitle").innerHTML =
     `${s.name} <span style="font-size:12px;font-weight:500;color:var(--ink-3);background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-pill);padding:3px 10px;vertical-align:middle;margin-left:8px">${s.region}</span>`;
 
@@ -2378,41 +2673,64 @@ function renderTownDashboard(townId) {
     ${heroHtml}
     <div class="town-body">
       <div class="town-grid td-page">
-        ${sec1}${sec2}${sec3}${sec4}${sec5}
+        ${sec1}${sec2}${sec3}${sec4}
       </div>
     </div>`;
 
-  // Mini-map
+  // Mini-map — destroy any previous Leaflet instance before re-init
   const miniMapEl = document.getElementById("tdMiniMapWrap");
   if (miniMapEl && s.coords) {
+    if (miniMapEl._leafletMap) {
+      try { miniMapEl._leafletMap.remove(); } catch(e) {}
+      delete miniMapEl._leafletMap;
+    }
+    miniMapEl.innerHTML = "";
+    delete miniMapEl._leaflet_id;
     const miniMap = L.map(miniMapEl, {
-      center: [1.352, 103.82], zoom: 9.5,
+      center: s.coords, zoom: 12,
       zoomControl: false, attributionControl: false,
       dragging: false, scrollWheelZoom: false,
       doubleClickZoom: false, touchZoom: false,
     });
+    miniMapEl._leafletMap = miniMap;
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       maxZoom: 19, subdomains: "abcd",
     }).addTo(miniMap);
+    // Current town — large accent marker
     L.circleMarker(s.coords, {
-      radius: 10, color: "var(--accent)", fillColor: "var(--accent)",
-      fillOpacity: 0.5, weight: 2.5,
-    }).addTo(miniMap);
+      radius: 11, color: "var(--accent)", fillColor: "#e07b4f",
+      fillOpacity: 0.85, weight: 2.5,
+    }).bindTooltip(s.name, { permanent: true, direction: "top", offset: [0, -10],
+      className: "td-minimap-label td-minimap-label--active" }).addTo(miniMap);
+    // Similar towns — smaller muted markers
+    comparable.forEach(({ id, cs }) => {
+      if (!cs.coords) return;
+      L.circleMarker(cs.coords, {
+        radius: 7, color: "#5ec896", fillColor: "#5ec896",
+        fillOpacity: 0.5, weight: 1.5,
+      }).bindTooltip(cs.name, { permanent: true, direction: "top", offset: [0, -8],
+        className: "td-minimap-label" }).addTo(miniMap);
+    });
+    // Fit map to show all markers
+    const allCoords = [s.coords, ...comparable.filter(({cs}) => cs.coords).map(({cs}) => cs.coords)];
+    if (allCoords.length > 1) {
+      miniMap.fitBounds(L.latLngBounds(allCoords).pad(0.3));
+    }
     setTimeout(() => miniMap.invalidateSize(), 120);
   }
 
-  // Re-render type trend chart at actual container width
+  // Re-render chart at actual container width
   requestAnimationFrame(() => {
     const townWrap = document.getElementById("townChartWrap");
     if (!townWrap) return;
-    if (townWrap.clientWidth > 10) townWrap.innerHTML = buildTypeTrendChart(townId, townWrap.clientWidth, sliceTl);
+    if (townWrap.clientWidth > 10) townWrap.innerHTML = buildTypeTrendChart(townId, townWrap.clientWidth, sliceTl, lcdChartTl);
     if (townWrap._resizeObs) townWrap._resizeObs.disconnect();
     let lastTownW = 0;
     townWrap._resizeObs = new ResizeObserver(entries => {
       const w = Math.floor(entries[0].contentRect.width);
       if (w < 10 || w === lastTownW) return;
       lastTownW = w;
-      townWrap.innerHTML = buildTypeTrendChart(townId, w, sliceTl);
+      townWrap.innerHTML = buildTypeTrendChart(townId, w, sliceTl, lcdChartTl);
     });
     townWrap._resizeObs.observe(townWrap);
   });
@@ -2423,7 +2741,16 @@ function renderTownDashboard(townId) {
 const COMPARE_COLORS = ["#e07b4f", "#5ec896", "#b48ee0"];
 
 const compareState   = { mode: "town" }; // "town" | "block"
-const townDashState  = { period: "all", townId: null }; // period: "1y"|"3y"|"5y"|"all"
+const townDashState  = {
+  period: "all",   // "1y"|"3y"|"5y"|"all"
+  townId: null,
+  flatType: "ALL", // "ALL"|"2 ROOM"|"3 ROOM"|"4 ROOM"|"5 ROOM"|"EXECUTIVE"|"MULTI-GENERATION"
+  lcdMin: null,    // null = no filter, number = year
+  lcdMax: null,
+  _lcdTrackPending: false,
+  _decadeFilter: null, // decade number or null
+  _txnShown: 20,   // how many txn rows shown
+};
 
 function renderCompare() {
   renderCompareHead();
@@ -2856,6 +3183,45 @@ function getTrendsTownTL(id) {
   return ((DB.town_type_timelines || {})[id] || {})[ft] || [];
 }
 
+// Merges lcd_band_timelines bands that overlap [lcdMin, lcdMax] into one monthly timeline.
+// Each band covers [bandStart, bandStart+4]. A band overlaps if bandStart+4 >= lcdMin
+// AND bandStart <= lcdMax. Monthly medians are volume-weighted across bands.
+// Returns null when no LCD filter is active (caller should use national timeline instead).
+function getLcdBandTimeline() {
+  const { lcdMin, lcdMax, flatType } = trendsState;
+  if (lcdMin == null && lcdMax == null) return null;
+  const lo = lcdMin ?? 1966, hi = lcdMax ?? 2022;
+
+  // Use type-specific bands when a flat type is selected
+  const useFtBands = flatType && flatType !== "ALL";
+  const bandSource = useFtBands
+    ? DB.lcd_band_type_timelines || {}
+    : DB.lcd_band_timelines || {};
+
+  const activeBands = Object.entries(bandSource).filter(([k]) => {
+    const bs = parseInt(k);
+    return (bs + 4) >= lo && bs <= hi;
+  });
+  if (!activeBands.length) return null;
+
+  const byMonth = {};
+  for (const [, entry] of activeBands) {
+    // entry is either a timeline array (all-type) or {flatType: timeline} (per-type)
+    const tl = useFtBands ? (entry[flatType] || []) : entry;
+    for (const d of tl) {
+      if (d.med == null || !d.vol) continue;
+      if (!byMonth[d.m]) byMonth[d.m] = { sumWtMed: 0, sumVol: 0 };
+      byMonth[d.m].sumWtMed += d.med * d.vol;
+      byMonth[d.m].sumVol   += d.vol;
+    }
+  }
+  return (DB.months || []).map(m => {
+    const e = byMonth[m];
+    if (!e || !e.sumVol) return { m, med: null, vol: 0 };
+    return { m, med: Math.round(e.sumWtMed / e.sumVol * 10) / 10, vol: e.sumVol };
+  });
+}
+
 // Returns blocks (optionally for one town) filtered by LCD range in trendsState.
 // When lcdMin/lcdMax are null the filter is inactive and all blocks are returned.
 function getLcdFilteredBlocks(townId = null) {
@@ -2990,32 +3356,31 @@ function renderTrends() {
     ? `LCD ${trendsState.lcdMin ?? "any"}–${trendsState.lcdMax ?? "any"}`
     : null;
 
-  // When LCD filter active, derive KPI numbers from blocks instead of national timeline
-  const natSliceForLcd = getFilteredNatTL();
-  const minY = natSliceForLcd.length ? parseInt(natSliceForLcd[0].m) : 0;
-  const maxY = natSliceForLcd.length ? parseInt(natSliceForLcd[natSliceForLcd.length-1].m) : 9999;
-  const allLcdBlocks = lcdActive ? getLcdFilteredBlocks() : null;
-
-  // Override median and vol from lcd-filtered blocks when filter is active
-  const lcdMedian = lcdActive ? lcdBlocksMedian(allLcdBlocks, minY, maxY) : null;
-  const lcdVol    = lcdActive ? lcdBlocksVol(allLcdBlocks, minY, maxY, ft) : null;
-  const totalVol  = lcdActive ? (lcdVol || 0) : validNat.reduce((s, d) => s + (d.vol || 0), 0);
+  // Year range for block-level queries ($/sqm uses vol_by_year which is keyed by year)
+  const minY = validNat.length ? parseInt(validNat[0].m) : 0;
+  const maxY = validNat.length ? parseInt(validNat[validNat.length - 1].m) : 9999;
+  // validNat already reflects LCD band timeline (via getFilteredNatTL) when filter active
+  const totalVol  = validNat.reduce((s, d) => s + (d.vol || 0), 0);
   const periodLabel = p === "1y" ? "1Y" : p === "3y" ? "3Y" : p === "5y" ? "5Y" : "All-time";
-  const periodLen = validNat.length; // months in current window
+  const periodLen = validNat.length;
 
-  // Period median: use lcd-filtered block median when filter active, else timeline median
+  // Period median of monthly medians in window
   const periodMedianNat = (() => {
-    if (lcdActive && lcdMedian) return lcdMedian;
     const prices = validNat.map(d => d.med).sort((a, b) => a - b);
     return prices[Math.floor(prices.length / 2)];
   })();
+
+  // Still need allLcdBlocks for $/sqm calculation (band timelines have no type breakdown)
+  const allLcdBlocks = lcdActive ? getLcdFilteredBlocks() : null;
   trendsState._refMedian = periodMedianNat;
+
+  // Price momentum: first/latest now come from LCD band timeline when filter active
   const periodChg = first.med > 0 ? (latest.med - first.med) / first.med * 100 : 0;
 
   // --- KPI 1: Median resale price vs prior equivalent period ---
-  // Use the type-filtered full timeline so it respects flat type selection
   const prevPeriodData = (() => {
-    const fullTL = getTrendsNatTL().filter(d => d.med != null);
+    const lcdTL = getLcdBandTimeline();
+    const fullTL = (lcdTL || getTrendsNatTL()).filter(d => d.med != null);
     if (!fullTL.length || periodLen < 2) return null;
     const startIdx = fullTL.findIndex(d => d.m === first.m);
     if (startIdx < periodLen) return null;
@@ -3044,10 +3409,9 @@ function renderTrends() {
   const momentumDir   = periodChg >= 0 ? "up" : "down";
 
   // --- KPI 3: Transactions + YoY volume comparison ---
-  // Compare total vol in current period vs same-length window 12 months earlier
-  // Use the type-filtered full timeline so it respects flat type selection
   const yoyVolChg = (() => {
-    const fullTL = getTrendsNatTL().filter(d => d.vol != null);
+    const lcdTL = getLcdBandTimeline();
+    const fullTL = (lcdTL || getTrendsNatTL()).filter(d => d.vol != null);
     if (!fullTL.length || periodLen < 2) return null;
     const startIdx = fullTL.findIndex(d => d.m === first.m);
     if (startIdx < 12) return null;
@@ -3059,10 +3423,38 @@ function renderTrends() {
     return prevTotal > 0 ? (totalVol - prevTotal) / prevTotal * 100 : null;
   })();
 
-  // --- KPI 4: Median $/sqm — computed from national_type_timelines + standard floor areas ---
-  // This is period-aware (uses the sliced window months) and flat-type-aware
+  // --- KPI 4: Median $/sqm ---
+  // When LCD active: derive from lcd-filtered blocks using vol_by_type shares + floor areas.
+  // When LCD inactive: derive from national_type_timelines (more accurate monthly data).
   const periodMonthSet = new Set(validNat.map(d => d.m));
-  const computePpsqm = (monthSet) => {
+
+  const computePpsqmFromBlocks = (blocks) => {
+    const typesToUse = ft === "ALL" ? Object.keys(HDB_FLOOR_AREA) : [ft];
+    let totalW = 0, weightedSum = 0;
+    for (const b of blocks) {
+      if (!b.med || !b.vol_by_year) continue;
+      let bVol = 0;
+      for (let y = minY; y <= maxY; y++) bVol += (b.vol_by_year[String(y)] || 0);
+      if (!bVol) continue;
+      // Determine effective floor area from this block's type mix
+      const mix = b.vol_by_type || {};
+      const totMix = Object.values(mix).reduce((s, v) => s + v, 0);
+      for (const type of typesToUse) {
+        const area = HDB_FLOOR_AREA[type];
+        if (!area) continue;
+        const typeShare = ft === "ALL"
+          ? (totMix > 0 ? (mix[type] || 0) / totMix : 1 / typesToUse.length)
+          : 1;
+        const typeVol = bVol * typeShare;
+        if (!typeVol) continue;
+        weightedSum += (b.med * 1000 / area) * typeVol;
+        totalW += typeVol;
+      }
+    }
+    return totalW > 0 ? Math.round(weightedSum / totalW) : null;
+  };
+
+  const computePpsqmFromTimeline = (monthSet) => {
     const ntt = DB.national_type_timelines || {};
     const typesToUse = ft === "ALL" ? Object.keys(HDB_FLOOR_AREA) : [ft];
     let totalW = 0, weightedSum = 0;
@@ -3071,15 +3463,18 @@ function renderTrends() {
       if (!area) continue;
       const entries = (ntt[type] || []).filter(d => monthSet.has(d.m) && d.med != null && d.vol > 0);
       for (const d of entries) {
-        const ppsqm = d.med * 1000 / area;
-        weightedSum += ppsqm * d.vol;
+        weightedSum += (d.med * 1000 / area) * d.vol;
         totalW += d.vol;
       }
     }
     return totalW > 0 ? Math.round(weightedSum / totalW) : null;
   };
-  const natPpsqm = computePpsqm(periodMonthSet);
-  // Prior period ppsqm: same calculation on the prior equivalent window
+
+  const natPpsqm = lcdActive && allLcdBlocks
+    ? computePpsqmFromBlocks(allLcdBlocks)
+    : computePpsqmFromTimeline(periodMonthSet);
+
+  // Prior period ppsqm for delta badge (always from timeline — no prior-LCD-block breakdown)
   const prevPpsqm = (() => {
     if (!prevPeriodData) return null;
     const fullTL = getTrendsNatTL().filter(d => d.med != null);
@@ -3087,7 +3482,7 @@ function renderTrends() {
     if (startIdx < periodLen) return null;
     const prevSlice = fullTL.slice(startIdx - periodLen, startIdx);
     const prevMonthSet = new Set(prevSlice.map(d => d.m));
-    return computePpsqm(prevMonthSet);
+    return computePpsqmFromTimeline(prevMonthSet);
   })();
   const ppsqmChg = (natPpsqm != null && prevPpsqm != null)
     ? (natPpsqm - prevPpsqm) / prevPpsqm * 100
@@ -3095,11 +3490,12 @@ function renderTrends() {
 
   const movers = buildTownMovers();
   const topUp      = [...movers].sort((a,b) => b.dpct - a.dpct).slice(0, 5);
-  const topDown    = [...movers].sort((a,b) => a.dpct - b.dpct).slice(0, 5);
+  const topDown    = [...movers].filter(t => t.dpct < 0).sort((a,b) => a.dpct - b.dpct).slice(0, 5);
   const topActive  = [...movers].sort((a,b) => b.vol - a.vol).slice(0, 5);
   const topValue   = [...movers].filter(t => t.ppsqm > 0).sort((a,b) => a.ppsqm - b.ppsqm).slice(0, 5);
 
-  const flatTypeOptions = ["ALL", ...DB.flat_types];
+  const EXCLUDED_TYPES = new Set(["1 ROOM", "MULTI-GENERATION"]);
+  const flatTypeOptions = ["ALL", ...DB.flat_types.filter(ft => !EXCLUDED_TYPES.has(ft))];
 
   // Town sort for bottom grid
   const sortMap = { median: (a,b) => b.median-a.median, cheap: (a,b) => a.median-b.median,
@@ -3107,37 +3503,14 @@ function renderTrends() {
                     price: (a,b) => b.median-a.median, value: (a,b) => a.ppsqm-b.ppsqm };
   const gridSorted = [...movers].sort(sortMap[trendsState.sortBy] || sortMap.median);
 
-  // Update head
+  // Update head — simple title only
   const trendsView = document.querySelector('[data-view="trends"]');
   let headEl = trendsView?.querySelector(".trends-head");
   if (headEl) {
-    const lcdMin = trendsState.lcdMin ?? 1966;
-    const lcdMax = trendsState.lcdMax ?? 2022;
-    headEl.innerHTML = `<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
-      <div style="display:flex;align-items:baseline;gap:14px">
-        <h2 class="compare-head-title">Trends</h2>
-        <span class="compare-head-sub">National market, ${fmtMonth(first.m)} — ${fmtMonth(latest.m)}</span>
-      </div>
-      <div class="lcd-slider-wrap" id="lcdSliderWrap">
-        <span class="lcd-slider-label">Lease commencement</span>
-        <div class="lcd-slider-track-wrap">
-          <div class="lcd-slider-track" id="lcdTrack"></div>
-          <input type="range" class="lcd-range-input" id="lcdRangeMin"
-            min="1966" max="2022" step="1" value="${trendsState.lcdMin ?? 1966}"
-            oninput="lcdRangeInput()" onchange="lcdCommit()">
-          <input type="range" class="lcd-range-input" id="lcdRangeMax"
-            min="1966" max="2022" step="1" value="${trendsState.lcdMax ?? 2022}"
-            oninput="lcdRangeInput()" onchange="lcdCommit()">
-        </div>
-        <div class="lcd-slider-values">
-          <span id="lcdValMin">${trendsState.lcdMin != null ? trendsState.lcdMin : "All"}</span>
-          <span>–</span>
-          <span id="lcdValMax">${trendsState.lcdMax != null ? trendsState.lcdMax : "All"}</span>
-        </div>
-        ${lcdActive ? `<button class="lcd-reset-btn" onclick="lcdReset()">Reset</button>` : ""}
-      </div>
+    headEl.innerHTML = `<div style="display:flex;align-items:baseline;gap:14px">
+      <h2 class="compare-head-title">Trends</h2>
+      <span class="compare-head-sub">National market, ${fmtMonth(first.m)} — ${fmtMonth(latest.m)}</span>
     </div>`;
-    lcdTrackUpdate();
   }
 
   container.innerHTML = `<div class="trends-grid">
@@ -3152,8 +3525,7 @@ function renderTrends() {
           <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
             ${fmtKs(periodMedianNat)}
             ${vsEqPeriodChg != null ? `<span class="kpi-delta-badge${vsEqPeriodChg >= 0 ? " up" : " down"}"
-              title="${prevPeriodTooltip}"
-              style="cursor:help">
+              data-tip="Median of monthly medians in this ${periodLabel} window (${fmtKs(periodMedianNat)}) vs the prior equivalent ${periodLabel} window ${prevPeriodData ? `(${fmtMonth(prevPeriodData.from)}–${fmtMonth(prevPeriodData.to)}, median ${fmtKs(prevPeriodData.median)})` : ""}.">
               ${vsEqPeriodChg >= 0 ? "▲" : "▼"} ${Math.abs(vsEqPeriodChg).toFixed(1)}% vs prior ${periodLabel === "All-time" ? "period" : periodLabel}
             </span>` : ""}
           </div>
@@ -3166,8 +3538,10 @@ function renderTrends() {
         <div class="kpi">
           <div class="kpi-label">Price momentum</div>
           <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px">
-            <span style="color:${periodChg >= 0 ? "var(--green)" : "var(--red)"}">${momentumArrow} ${Math.abs(periodChg).toFixed(1)}%</span>
-            <span class="kpi-momentum-tag" style="color:${momentumTag.color};border-color:${momentumTag.color}">${momentumTag.label}</span>
+            <span style="color:${periodChg >= 0 ? "var(--green)" : "var(--red)"}"
+              data-tip="Price change from the first month (${fmtMonth(first.m)}, ${fmtKs(first.med)}) to the last month (${fmtMonth(latest.m)}, ${fmtKs(latest.med)}) of your selected ${periodLabel} window.">${momentumArrow} ${Math.abs(periodChg).toFixed(1)}%</span>
+            <span class="kpi-momentum-tag" style="color:${momentumTag.color};border-color:${momentumTag.color}"
+              data-tip="Stable: change &lt;1%. Rising: 1–5%. Heating: &gt;5%. Easing: −1–−5%. Cooling: &lt;−5%. Based on price change across your selected ${periodLabel} window.">${momentumTag.label}</span>
           </div>
           <div class="kpi-sub">Prices ${momentumDir} ${Math.abs(periodChg).toFixed(1)}% · ${fmtMonth(first.m)} → ${fmtMonth(latest.m)}</div>
         </div>
@@ -3180,7 +3554,8 @@ function renderTrends() {
           <div class="kpi-value">${totalVol.toLocaleString()}</div>
           <div class="kpi-sub">
             ${yoyVolChg != null
-              ? `<span class="${yoyVolChg >= 0 ? "kpi-delta-badge up" : "kpi-delta-badge down"}" style="font-size:10px">${yoyVolChg >= 0 ? "▲" : "▼"} ${Math.abs(yoyVolChg).toFixed(1)}%</span> vs same period last year`
+              ? `<span class="${yoyVolChg >= 0 ? "kpi-delta-badge up" : "kpi-delta-badge down"}" style="font-size:10px"
+                  data-tip="Compares total transactions in your current ${periodLabel} window (${fmtMonth(first.m)}–${fmtMonth(latest.m)}) against the same-length window shifted 12 months earlier.">${yoyVolChg >= 0 ? "▲" : "▼"} ${Math.abs(yoyVolChg).toFixed(1)}%</span> vs same period last year`
               : `${periodLabel} total`}
           </div>
         </div>
@@ -3191,8 +3566,9 @@ function renderTrends() {
         <div class="kpi">
           <div class="kpi-label">Median $/sqm</div>
           <div class="kpi-value" style="display:flex;align-items:baseline;gap:8px">
-            ${natPpsqm != null ? `$${natPpsqm.toLocaleString()}` : "—"}
-            ${ppsqmChg != null ? `<span class="kpi-delta-badge${ppsqmChg >= 0 ? " up" : " down"}">${ppsqmChg >= 0 ? "▲" : "▼"} ${Math.abs(ppsqmChg).toFixed(1)}%</span>` : ""}
+            ${natPpsqm != null ? `<span data-tip="Volume-weighted $/sqm across flat types, using standard HDB floor areas (e.g. 4-room = 93 sqm). Does not reflect remaining lease — flats with short leases may face CPF usage restrictions.">${`$${natPpsqm.toLocaleString()}`}</span>` : "—"}
+            ${ppsqmChg != null ? `<span class="kpi-delta-badge${ppsqmChg >= 0 ? " up" : " down"}"
+              data-tip="$/sqm in your current ${periodLabel} window vs the prior equivalent ${periodLabel} window. Both figures use the same volume-weighted methodology.">${ppsqmChg >= 0 ? "▲" : "▼"} ${Math.abs(ppsqmChg).toFixed(1)}%</span>` : ""}
           </div>
           <div class="kpi-sub">Volume-weighted · vs prior ${periodLabel === "All-time" ? "period" : periodLabel}</div>
         </div>
@@ -3208,32 +3584,37 @@ function renderTrends() {
           <div class="trends-chart-sub">Line = price (left axis) · bars = volume (right axis) · hover to inspect</div>
         </div>
         <div class="trends-controls">
+          <div class="lcd-filter-row" id="lcdSliderWrap" style="border:none;background:none;padding:0;margin:0">
+            <span class="lcd-slider-label" data-tip="Filters to blocks whose lease commenced in this year range. HDB requires the youngest occupier to be ≤95 years old when the 99-year lease expires to use CPF — so lease commencement year directly affects CPF eligibility and bank loan tenure.">Lease comm.</span>
+            <div class="lcd-slider-track-wrap">
+              <div class="lcd-slider-track" id="lcdTrack"></div>
+              <input type="range" class="lcd-range-input" id="lcdRangeMin"
+                min="1966" max="2022" step="1" value="${trendsState.lcdMin ?? 1966}"
+                oninput="lcdRangeInput()" onchange="lcdCommit()">
+              <input type="range" class="lcd-range-input" id="lcdRangeMax"
+                min="1966" max="2022" step="1" value="${trendsState.lcdMax ?? 2022}"
+                oninput="lcdRangeInput()" onchange="lcdCommit()">
+            </div>
+            <div class="lcd-slider-values">
+              <span id="lcdValMin">${trendsState.lcdMin != null ? trendsState.lcdMin : "All"}</span>
+              <span>–</span>
+              <span id="lcdValMax">${trendsState.lcdMax != null ? trendsState.lcdMax : "All"}</span>
+            </div>
+            ${lcdActive ? `<button class="lcd-reset-btn" onclick="lcdReset()">Reset</button>` : ""}
+          </div>
           <div class="trends-period-btns">
             ${["1Y","3Y","5Y","All"].map(p =>
               `<button class="trends-period-btn${trendsState.period===p.toLowerCase()||trendsState.period===p?' active':''}" onclick="setTrendsPeriod('${p}')">${p}</button>`
             ).join("")}
           </div>
           <div class="trends-type-btns" id="trendsTypeBtns">
-            ${(() => {
-              const RARE = new Set(["1 ROOM", "MULTI-GENERATION"]);
-              const common = flatTypeOptions.filter(ft => !RARE.has(ft));
-              const rare   = flatTypeOptions.filter(ft => RARE.has(ft));
-              const rareActive = rare.some(ft => trendsState.flatType === ft);
-              const expanded = rareActive || trendsState._typeExpanded;
-              const label = ft => ft === "ALL" ? "All types" : ft.replace(" ROOM","Rm").replace("EXECUTIVE","Exec").replace("MULTI-GENERATION","MultiGen");
-              return common.map(ft =>
-                `<button class="trends-type-btn${trendsState.flatType===ft?' active':''}" onclick="setTrendsType('${ft}')">${label(ft)}</button>`
-              ).join("") + (expanded
-                ? rare.map(ft =>
-                    `<button class="trends-type-btn${trendsState.flatType===ft?' active':''}" onclick="setTrendsType('${ft}')">${label(ft)}</button>`
-                  ).join("") + `<button class="trends-type-btn trends-type-more" onclick="trendsState._typeExpanded=false;renderTrends()">− Less</button>`
-                : `<button class="trends-type-btn trends-type-more" onclick="trendsState._typeExpanded=true;renderTrends()">+ More</button>`
-              );
-            })()}
+            ${flatTypeOptions.map(ft => {
+              const label = ft === "ALL" ? "All types" : ft.replace(" ROOM","Rm").replace("EXECUTIVE","Exec");
+              return `<button class="trends-type-btn${trendsState.flatType===ft?' active':''}" onclick="setTrendsType('${ft}')">${label}</button>`;
+            }).join("")}
           </div>
         </div>
       </div>
-      ${lcdActive ? `<div class="lcd-filter-banner">LCD filter active: ${lcdLabel} · Chart shows all buildings (no monthly LCD breakdown available)</div>` : ""}
       <div class="trends-chart-wrap" id="trendsChartWrap">${buildComboChart(800, periodMedianNat)}</div>
       <div class="trends-overlay-section">
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:7px">
@@ -3276,18 +3657,22 @@ function renderTrends() {
             <span class="pulse-row-name">${t.name}</span>
             <span style="flex:1"></span>
             <span style="font-size:12px;color:var(--ink-3)">${fmtKs(t.median)}</span>
-            <span class="pulse-row-pill up">${t.dpct >= 0 ? "+" : ""}${t.dpct.toFixed(1)}%</span>
+            <span class="pulse-row-pill up"
+              data-tip="Price change from the start to the end of your ${periodLabel} window, using volume-weighted block medians. Reflects your active flat type and lease commencement filters.">${t.dpct >= 0 ? "+" : ""}${t.dpct.toFixed(1)}%</span>
           </div>`).join("")}
       </div>
       <div class="td-card">
         <div class="td-card-title">Biggest declines <span class="td-card-note">${periodLabel} price change</span></div>
-        ${topDown.map((t,i) => `
+        ${topDown.length === 0
+          ? `<div style="font-size:12px;color:var(--ink-3);padding:8px 0">No towns declined in this period</div>`
+          : topDown.map((t,i) => `
           <div class="pulse-row" onclick="openTownDashboard('${t.id}')" style="cursor:pointer">
             <span class="pulse-row-rank">${i+1}</span>
             <span class="pulse-row-name">${t.name}</span>
             <span style="flex:1"></span>
             <span style="font-size:12px;color:var(--ink-3)">${fmtKs(t.median)}</span>
-            <span class="pulse-row-pill ${t.dpct < 0 ? "down" : "up"}">${t.dpct >= 0 ? "+" : ""}${t.dpct.toFixed(1)}%</span>
+            <span class="pulse-row-pill down"
+              data-tip="Price change from the start to the end of your ${periodLabel} window, using volume-weighted block medians. Reflects your active flat type and lease commencement filters.">${t.dpct.toFixed(1)}%</span>
           </div>`).join("")}
       </div>
       <div class="td-card">
@@ -3301,7 +3686,8 @@ function renderTrends() {
           </div>`).join("")}
       </div>
       <div class="td-card">
-        <div class="td-card-title">Best value <span class="td-card-note">Lowest $/sqm</span></div>
+        <div class="td-card-title">Best value <span class="td-card-note"
+          data-tip="Lowest price-per-sqm based on standard HDB floor areas. Does not account for remaining lease — a low $/sqm flat with under 60 years left may restrict CPF usage and reduce resale appeal.">Lowest $/sqm ⓘ</span></div>
         ${topValue.map((t,i) => `
           <div class="pulse-row" onclick="openTownDashboard('${t.id}')" style="cursor:pointer">
             <span class="pulse-row-rank">${i+1}</span>
@@ -3340,22 +3726,29 @@ function renderTrends() {
     syncChartHeight();
     attachChartListeners();
     attachChartResizeObserver();
+    lcdTrackUpdate();
   });
 }
 
 function buildTownGrid(sorted) {
+  const { period } = trendsState;
+  const periodLabel = period === "1y" ? "1Y" : period === "3y" ? "3Y" : period === "5y" ? "5Y" : "All-time";
   return sorted.map(t => {
     const tl = getFilteredTownTL(t.id);
     const sp = sparklineSVG(tl, { w: 140, h: 38, color: t.dpct >= 0 ? "var(--accent)" : "var(--red)", fill: true });
+    const pillTip = `Price change from start to end of the ${periodLabel} window for ${t.name}, using volume-weighted block medians. Reflects active flat type and lease filters.`;
+    const cls = t.dpct > 0.3 ? "up" : t.dpct < -0.3 ? "down" : "flat";
+    const arrow = t.dpct > 0.3 ? "↑" : t.dpct < -0.3 ? "↓" : "→";
     return `<div class="trends-town-card" onclick="openTownDashboard('${t.id}')">
       <div class="trends-town-card-header">
         <span class="trends-town-card-name">${t.name}</span>
-        ${deltaPill(t.dpct)}
+        <span class="delta-pill ${cls}" data-tip="${pillTip}">${arrow} ${fmtPct(t.dpct)}</span>
       </div>
       ${sp}
       <div class="trends-town-card-meta">
         <span class="trends-town-card-price">${fmtKs(t.median)}</span>
-        <span class="trends-town-card-ppsqm">$${t.ppsqm?.toLocaleString()}/m²</span>
+        <span class="trends-town-card-ppsqm"
+          data-tip="Volume-weighted $/sqm for ${t.name} using standard HDB floor areas. Does not account for remaining lease — short-lease flats may have CPF restrictions.">$${t.ppsqm?.toLocaleString()}/m²</span>
       </div>
       <div class="trends-town-card-region">${t.region}</div>
     </div>`;
@@ -3363,7 +3756,9 @@ function buildTownGrid(sorted) {
 }
 
 function getFilteredNatTL() {
-  const tl = getTrendsNatTL();
+  // When LCD filter active, use merged band timeline instead of national timeline
+  const lcdTL = getLcdBandTimeline();
+  const tl = lcdTL || getTrendsNatTL();
   const p  = trendsState.period;
   if (p === "1y") return tl.slice(-12);
   if (p === "3y") return tl.slice(-36);
@@ -3544,7 +3939,7 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
       return `<line x1="${pad.l}" y1="${ry}" x2="${W - pad.r}" y2="${ry}"
         stroke="rgba(255,255,255,0.35)" stroke-width="1" stroke-dasharray="4 3"/>
         <text x="${pad.l + 4}" y="${(Number(ry) - 3).toFixed(1)}" font-size="9" fill="rgba(255,255,255,0.5)"
-          font-family="Inter,sans-serif">Now: ${fmtKs(refMedian)}</text>`;
+          font-family="Inter,sans-serif">Period median: ${fmtKs(refMedian)}</text>`;
     })()}
     <!-- Crosshair (hidden by default) -->
     <line id="chartCross" x1="0" y1="${pad.t}" x2="0" y2="${H-pad.b}" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
@@ -3682,11 +4077,6 @@ function attachChartListeners() {
   });
 }
 
-window.setTownPeriod = (p) => {
-  townDashState.period = p.toLowerCase();
-  if (townDashState.townId) renderTownDashboard(townDashState.townId);
-};
-
 window.setTrendsPeriod = (p) => {
   trendsState.period = p.toLowerCase();
   renderTrends();
@@ -3744,7 +4134,8 @@ window.lcdReset = function() {
 };
 
 window.setTrendsType = (ft) => {
-  trendsState.flatType = ft;
+  const excluded = new Set(["1 ROOM", "MULTI-GENERATION"]);
+  trendsState.flatType = excluded.has(ft) ? "ALL" : ft;
   renderTrends();
 };
 

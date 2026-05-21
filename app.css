@@ -1895,6 +1895,11 @@ body {
 }
 
 /* LCD commencement year dual-handle range slider */
+.lcd-filter-row {
+  display: flex; align-items: center; gap: 14px; flex-wrap: nowrap;
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 16px; margin-bottom: 4px;
+}
 .lcd-slider-wrap {
   display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;
 }
@@ -1953,6 +1958,27 @@ body {
 .trends-body {
   flex: 1; overflow-y: auto; padding: 24px;
 }
+
+/* ── App tooltip ─────────────────────────────────────────────────────────── */
+.app-tooltip {
+  display: none;
+  position: absolute;
+  z-index: 9999;
+  max-width: 240px;
+  padding: 7px 10px;
+  background: rgba(10,12,18,0.97);
+  color: var(--ink, #f4f2ed);
+  font-size: 11.5px;
+  line-height: 1.5;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  pointer-events: none;
+  white-space: normal;
+  font-family: var(--font, Inter, sans-serif);
+}
+/* Only apply help cursor to tip elements that aren't already interactive */
+[data-tip]:not(button):not([onclick]):not(.pulse-row):not(.trends-town-card):not(.delta-pill) { cursor: help; }
 .trends-grid {
   display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px;
 }
@@ -2096,15 +2122,34 @@ body {
 
 /* Storey grid */
 .storey-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 4px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 240px)); gap: 10px; margin-top: 4px;
+}
+.storey-grid--compact {
+  grid-template-columns: 1fr; gap: 5px; margin-top: 6px;
 }
 .storey-cell {
   background: var(--surface-2); border-radius: var(--r-sm);
   padding: 12px 14px; display: flex; flex-direction: column; gap: 4px;
 }
+.storey-cell--sm {
+  padding: 7px 10px; flex-direction: row; align-items: center; gap: 8px;
+}
+.storey-cell--sm .storey-cell-lbl { flex: 0 0 56px; }
+.storey-cell--sm .storey-cell-val { font-size: 14px; flex: 1; }
+.storey-cell--sm .storey-cell-prem { font-size: 10px; margin-left: auto; }
+.storey-cell--sm .storey-cell-n { font-size: 9px; color: var(--ink-3); margin-left: 4px; }
 .storey-cell-lbl { font-size: 10px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: .07em; }
 .storey-cell-val { font-size: 18px; font-weight: 800; color: var(--ink); letter-spacing: -.02em; }
 .storey-cell-prem { font-size: 11px; font-weight: 700; color: var(--accent); }
+
+/* Divider inside the type panel separating flat type rows from storey premium */
+.td-type-panel-divider {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--ink-3); border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px;
+}
+
+/* Equal-height similar towns column: flex column so map fills remaining space */
+.td-similar-col { display: flex; flex-direction: column; }
 
 /* Lease histogram */
 .lease-hist {
@@ -2119,6 +2164,16 @@ body {
 .lease-xlbl {
   position: absolute; bottom: 0; font-size: 9px; color: var(--ink-3);
   text-align: center; white-space: nowrap;
+}
+
+/* Minimap tooltip labels */
+.td-minimap-label {
+  background: rgba(11,13,17,0.85); border: 1px solid rgba(255,255,255,0.12);
+  color: #aeaba2; font-size: 10px; font-weight: 600; padding: 2px 6px;
+  border-radius: 4px; box-shadow: none; white-space: nowrap;
+}
+.td-minimap-label--active {
+  background: rgba(224,123,79,0.9); border-color: #e07b4f; color: #fff;
 }
 
 /* Similar towns (block-row style) */
@@ -2189,3 +2244,162 @@ body {
 .loading-sub { font-size: 13px; color: var(--ink-3); }
 .loading-bar-wrap { width: 200px; height: 3px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
 .loading-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
+
+/* ── Town page redesign additions ──────────────────────────────────────────── */
+
+/* Hero bottom row: KPI strip + inline filters */
+.town-hero-bottom {
+  display: flex; align-items: flex-start;
+  border-top: 1px solid var(--line);
+}
+.town-hero-bottom .town-strip {
+  flex: 0 0 auto;
+  grid-template-columns: repeat(6, 1fr);
+  border-top: none;
+  border-right: 1px solid var(--line);
+}
+.td-hero-filters {
+  flex: 1; display: flex; flex-wrap: wrap; align-items: flex-start;
+  gap: 12px 20px; padding: 12px 16px;
+}
+.td-hf-group { display: flex; flex-direction: column; gap: 5px; }
+.td-hf-group--lcd { flex: 0 0 auto; width: 180px; }
+.td-hf-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink-3); display: flex; align-items: center; gap: 8px;
+}
+
+/* td-card--stretch: fills column height */
+.td-card--stretch { display: flex; flex-direction: column; }
+.td-card--stretch .td-ftb-header,
+.td-card--stretch .td-ftb-row { flex: 0 0 auto; }
+
+/* Combined chart + flat type panel layout */
+.td-chart-type-layout {
+  display: flex; gap: 0; align-items: stretch;
+}
+.td-chart-panel {
+  flex: 1 1 0; min-width: 0; padding-right: 16px;
+  border-right: 1px solid var(--line);
+}
+.td-type-panel {
+  flex: 0 0 280px; padding-left: 16px;
+  display: flex; flex-direction: column;
+}
+.td-type-panel .td-ftb-header,
+.td-type-panel .td-ftb-row { flex: 0 0 auto; }
+
+/* Equal height for blocks + similar towns column pair */
+.td-card--equal-height {
+  display: flex; flex-direction: column;
+}
+.td-card--equal-height .td-blocks-table-wrap { flex: 1; }
+.td-card--equal-height #tdMiniMapWrap { flex: 1; min-height: 100px; }
+
+/* Global filter bar (legacy — kept for potential reuse) */
+.td-filter-bar {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px 24px;
+  padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.td-filter-group {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.td-filter-group--lcd { flex: 0 0 auto; width: 180px; }
+.td-filter-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--ink-3); display: flex; align-items: center; gap: 8px;
+}
+.td-lcd-reset {
+  background: none; border: none; cursor: pointer; font-size: 10px;
+  color: var(--accent); padding: 0; font-weight: 600;
+}
+.td-lcd-reset:hover { text-decoration: underline; }
+.td-filter-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 700; padding: 2px 8px;
+  background: rgba(224,123,79,0.15); color: var(--accent);
+  border-radius: var(--r-pill); border: 1px solid rgba(224,123,79,0.3);
+  margin-left: 6px;
+}
+
+/* LCD dual-handle slider (town page variant) */
+.td-lcd-slider-wrap { position: relative; height: 24px; display: flex; align-items: center; width: 100%; }
+.td-lcd-track {
+  position: absolute; left: 0; right: 0; height: 4px;
+  background: var(--surface-3); border-radius: 2px;
+}
+.td-lcd-fill {
+  position: absolute; height: 4px; background: var(--accent); border-radius: 2px;
+}
+.td-lcd-range {
+  position: absolute; width: 100%; height: 4px; background: transparent;
+  -webkit-appearance: none; appearance: none; outline: none; cursor: pointer; pointer-events: none;
+}
+.td-lcd-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg);
+  cursor: pointer; pointer-events: auto; box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.td-lcd-range::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg);
+  cursor: pointer; pointer-events: auto;
+}
+.td-lcd-label {
+  font-size: 11px; color: var(--ink-2); font-weight: 600; margin-top: 4px;
+  font-family: var(--font-mono, monospace); letter-spacing: .02em;
+}
+
+/* Quick stats 2×2 grid */
+.td-quick-stats {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 4px;
+}
+.td-qs-item { }
+.td-qs-item .kpi-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin-bottom: 2px; }
+.td-qs-item .kpi-value { font-size: 18px; font-weight: 800; color: var(--ink); line-height: 1.1; }
+.td-qs-item .kpi-sub   { font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+
+/* Flat type breakdown — active row + header */
+.td-ftb-header {
+  display: grid;
+  grid-template-columns: 8px 52px 1fr 58px 72px 32px;
+  gap: 8px; padding: 0 0 4px;
+}
+.td-ftb-col-hdr { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); text-align: right; }
+.td-ftb-row { cursor: pointer; transition: background 0.15s; border-radius: 4px; padding: 6px 4px; }
+.td-ftb-row:hover { background: var(--surface-2); }
+.td-ftb-row--active { background: rgba(224,123,79,0.08); border-radius: 4px; }
+.td-ftb-row--active .td-ftb-label { color: var(--accent); }
+
+/* Storey cell n= count */
+.storey-cell-n { font-size: 9px; color: var(--ink-3); margin-top: 1px; }
+
+/* Blocks search */
+.td-blocks-search-wrap { padding: 6px 0 8px; }
+.td-blocks-search {
+  width: 100%; padding: 6px 10px; font-size: 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); color: var(--ink); outline: none;
+  transition: border-color 0.15s;
+}
+.td-blocks-search:focus { border-color: var(--accent); }
+.td-blocks-search::placeholder { color: var(--ink-3); }
+
+/* Decade rows — active/clickable */
+.td-decade-row { cursor: pointer; border-radius: 4px; padding: 3px 4px; transition: background 0.15s; }
+.td-decade-row:hover { background: var(--surface-2); }
+.td-decade-row--active { background: rgba(224,123,79,0.1); }
+.td-decade-row--active .td-decade-lbl { color: var(--accent); }
+
+/* Decade filter banner */
+.td-decade-filter-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; margin-bottom: 8px;
+  background: rgba(224,123,79,0.1); border: 1px solid rgba(224,123,79,0.25);
+  border-radius: var(--r-sm); font-size: 12px; color: var(--accent); font-weight: 600;
+}
+.td-decade-filter-banner button {
+  background: none; border: none; cursor: pointer; color: var(--accent);
+  font-size: 12px; font-weight: 700; padding: 0; margin-left: auto;
+}
