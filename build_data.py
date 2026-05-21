@@ -389,17 +389,19 @@ for t in towns:
     scatter_rows = sorted(last12_rows, key=lambda x: -x["price"])[:300]
     scatter = [{"x": r["sqm"], "y": round(r["price"]/1000,1), "t": r["type"]} for r in scatter_rows]
 
-    # recent transactions (last 100) — include lease_yrs for flag + floor_area_sqm for $/sqm
-    recent_txns = sorted(
+    # All transactions sorted desc — stored compactly for period/type/LCD filtering in browser
+    all_txns_sorted = sorted(
         [r for r in rows if r["town"] == t],
         key=lambda x: x["month"],
         reverse=True
-    )[:100]
+    )
+    # Compact array format: [month, block, street, type, sqm, storey, price_k, lcd, lease_yrs]
+    # price stored as thousands (float), ppsqm omitted (can be derived: price_k*1000/sqm)
     recent_out = [{"month": r["month"], "block": r["block"], "street": r["street"],
                    "type": r["type"], "sqm": r["sqm"], "storey": r["storey"],
                    "price": r["price"], "ppsqm": r["ppsqm"], "lcd": r["lcd"],
                    "lease_yrs": r["lease_yrs"],
-                   "floor_area_sqm": r["sqm"]} for r in recent_txns]
+                   "floor_area_sqm": r["sqm"]} for r in all_txns_sorted]
 
     town_summaries[t] = {
         "id":              t,

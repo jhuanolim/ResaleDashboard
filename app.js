@@ -163,61 +163,6 @@ const AMENITIES = {
 };
 
 /* ── Price tier colours ─────────────────────────────────────────────────── */
-/* ══════════════════════════════════════════════════════════════════════════
-   SHORTLIST
-   ══════════════════════════════════════════════════════════════════════════ */
-const SHORTLIST_KEY = "hdb-atlas-shortlist-v1";
-const _shortlist = {
-  items: new Set(JSON.parse(localStorage.getItem(SHORTLIST_KEY) || "[]")),
-  save() { localStorage.setItem(SHORTLIST_KEY, JSON.stringify([...this.items])); },
-  toggle(id) { if (this.items.has(id)) this.items.delete(id); else this.items.add(id); this.save(); updateShortlistUI(); },
-  has(id) { return this.items.has(id); },
-  toArray() { return [...this.items]; }
-};
-
-function updateShortlistUI() {
-  const count = _shortlist.items.size;
-  const pill = document.getElementById("shortlistPillBtn");
-  const cnt = document.getElementById("shortlistCount");
-  if (!pill) return;
-  pill.classList.toggle("has-items", count > 0);
-  if (cnt) { cnt.style.display = count > 0 ? "" : "none"; cnt.textContent = count; }
-  renderShortlistDrawer();
-  document.querySelectorAll(".star-btn[data-town]").forEach(btn => {
-    btn.classList.toggle("starred", _shortlist.has(btn.dataset.town));
-  });
-}
-
-function renderShortlistDrawer() {
-  const body = document.getElementById("shortlistDrawerBody");
-  if (!body) return;
-  const ids = _shortlist.toArray();
-  if (ids.length === 0) {
-    body.innerHTML = `<div class="shortlist-empty"><div class="shortlist-empty-icon">★</div>Star towns on the map to save them here</div>`;
-    return;
-  }
-  const rows = ids.map(id => {
-    const s = DB?.town_summaries?.[id];
-    const color = s ? tierColor(s.median) : "#6e6b63";
-    const price = s ? fmtKs(s.median) : "—";
-    return `<div class="shortlist-item">
-      <span class="shortlist-item-dot" style="background:${color}"></span>
-      <span class="shortlist-item-name">${id}</span>
-      <span class="shortlist-item-price">${price}</span>
-      <button class="shortlist-item-remove" onclick="_shortlist.toggle('${id}');updateShortlistUI()" title="Remove">✕</button>
-    </div>`;
-  }).join("");
-  body.innerHTML = rows;
-}
-
-window.toggleShortlistDrawer = function() {
-  const drawer = document.getElementById("shortlistDrawer");
-  const backdrop = document.getElementById("shortlistBackdrop");
-  const isOpen = drawer.classList.toggle("open");
-  if (backdrop) backdrop.classList.toggle("open", isOpen);
-  if (isOpen) renderShortlistDrawer();
-};
-
 
 /* ══════════════════════════════════════════════════════════════════════════
    FILTER BAR (horizontal, desktop)
@@ -244,6 +189,7 @@ window.fbLeaseMinChange = function(val) {
   renderDataBadge();
   updateFbTxnCount();
   renderPulsePanel();
+  renderOpenDrawer(); // Bug 2+3: reactive drawer
 };
 
 window.fbLeaseMaxChange = function(val) {
@@ -255,6 +201,27 @@ window.fbLeaseMaxChange = function(val) {
   renderDataBadge();
   updateFbTxnCount();
   renderPulsePanel();
+  renderOpenDrawer(); // Bug 2+3: reactive drawer
+};
+
+// Bug 6: budget preset chip handler — one active at a time, click active to deselect
+window.setBudgetChip = function(btn, minK, maxK) {
+  const wasActive = btn.classList.contains("active");
+  document.querySelectorAll("#budgetChips .fb-year-chip").forEach(b => b.classList.remove("active"));
+  if (wasActive) {
+    // Deselect — clear budget filter
+    state.filters.budgetMin = 0;
+    state.filters.budgetMax = 9999;
+  } else {
+    btn.classList.add("active");
+    state.filters.budgetMin = minK;
+    state.filters.budgetMax = maxK;
+  }
+  updateMapMarkers();
+  renderDataBadge();
+  updateFbTxnCount();
+  renderPulsePanel();
+  renderOpenDrawer();
 };
 
 window.fbTxnChip = function(btn, minY, maxY) {
@@ -262,10 +229,14 @@ window.fbTxnChip = function(btn, minY, maxY) {
   btn.classList.add("active");
   state.filters.minTxnYear = minY;
   state.filters.maxTxnYear = maxY;
+  // Sync trendsState.period for consistent button active state on Trends page
+  const curYear = 2026;
+  trendsState.period = minY === curYear ? "1y" : minY === curYear - 2 ? "3y" : minY === curYear - 4 ? "5y" : "all";
   updateMapMarkers();
   renderDataBadge();
   updateFbTxnCount();
   renderPulsePanel();
+  renderOpenDrawer(); // Bug 2+3: reactive drawer
 };
 
 function updateFbTxnCount() {
@@ -302,28 +273,55 @@ function renderPulsePanel() {
     return prices[Math.floor(prices.length / 2)];
   }
 
-  // Compute per-town filtered median: txn year first, then type overlay
+  // Compute per-town filtered median: period + type aware from type timelines
   function filteredMedian(t) {
-    let base = txnYearMedian(t._id) ?? t.median;
     if (hasTypeFilter) {
-      const vals = f.types.map(ft => t.type_medians?.[ft]).filter(Boolean);
-      if (vals.length) base = Math.round(vals.reduce((a, v) => a + v, 0) / vals.length);
+      const vals = f.types.map(ft => {
+        const ftTl = (DB.town_type_timelines?.[t._id]?.[ft] || [])
+          .filter(d => d.med != null && parseInt(d.m) >= f.minTxnYear && parseInt(d.m) <= f.maxTxnYear);
+        if (!ftTl.length) return t.type_medians?.[ft];
+        const sorted = ftTl.map(d => d.med).sort((a, b) => a - b);
+        return sorted[Math.floor(sorted.length / 2)];
+      }).filter(Boolean);
+      if (vals.length) return Math.round(vals.reduce((a, v) => a + v, 0) / vals.length);
     }
-    return base;
+    return txnYearMedian(t._id) ?? t.median;
   }
 
-  // Compute per-town filtered vol for txn year filter (use vol_by_year if available)
+  // Fix #4: compute per-town filtered vol — period + type aware from type timelines
   function filteredVol(t) {
-    if (!t.vol_by_year) return t.vol;
-    let v = 0;
-    for (let y = f.minTxnYear; y <= f.maxTxnYear; y++) v += (t.vol_by_year[y] || 0);
-    return v;
+    const fts = hasTypeFilter ? f.types : null;
+    const tlMap = DB.town_type_timelines?.[t._id];
+    if (tlMap) {
+      const sources = fts ? fts.map(ft => tlMap[ft]).filter(Boolean) : [DB.town_timelines[t._id]];
+      let v = 0;
+      for (const ftTl of sources) {
+        for (const d of (ftTl || [])) {
+          const y = parseInt(d.m);
+          if (y >= f.minTxnYear && y <= f.maxTxnYear) v += (d.vol || 0);
+        }
+      }
+      return v || t.vol;
+    }
+    return t.vol;
   }
 
-  // dpct from timeline: compare last entry in range vs first entry in range
+  // Bug 1: dpct must come from the same filtered timeline as filteredMedian
   function filteredDpct(t) {
+    let inRange;
+    if (hasTypeFilter) {
+      // Average dpct across selected types (first→last of type-filtered, period-sliced TL)
+      const dpctsPerType = f.types.map(ft => {
+        const ftTl = (DB.town_type_timelines?.[t._id]?.[ft] || [])
+          .filter(d => d.med != null && parseInt(d.m) >= f.minTxnYear && parseInt(d.m) <= f.maxTxnYear);
+        if (ftTl.length < 2) return null;
+        const first = ftTl[0].med, last = ftTl[ftTl.length - 1].med;
+        return first > 0 ? (last - first) / first * 100 : null;
+      }).filter(v => v != null);
+      if (dpctsPerType.length) return dpctsPerType.reduce((a, v) => a + v, 0) / dpctsPerType.length;
+    }
     const tl = DB.town_timelines?.[t._id] || [];
-    const inRange = tl.filter(d => { const y = parseInt(d.m); return y >= f.minTxnYear && y <= f.maxTxnYear && d.med != null; });
+    inRange = tl.filter(d => { const y = parseInt(d.m); return y >= f.minTxnYear && y <= f.maxTxnYear && d.med != null; });
     if (inRange.length < 2) return t.dpct || 0;
     const last = inRange[inRange.length - 1].med;
     const prev = inRange[0].med;
@@ -1045,10 +1043,10 @@ async function boot() {
   initMap();
   renderDataBadge();
   updateFbTxnCount();
-  updateShortlistUI();
-  // Set initial txn filter to 2026 (active chip default)
+  // Set initial txn filter to 2026 (active chip default — "1Y" period)
   state.filters.minTxnYear = 2026;
   state.filters.maxTxnYear = 2026;
+  trendsState.period = "1y"; // keep in sync with state.filters on boot
 
   bar.style.width = "100%";
   setTimeout(() => {
@@ -1116,29 +1114,9 @@ function countFilteredTxns() {
 function buildFilters() {
   if (!DB) return;
 
-  // Budget state
+  // Budget state (Bug 6: preset chips, no free-text input)
   state.filters.budgetMin = 0;
   state.filters.budgetMax = 9999;
-
-  // Budget input wiring
-  ["budgetMin", "budgetMax"].forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener("input", () => {
-      const raw = el.value.replace(/[^0-9kKmM.]/g, "");
-      let val = parseFloat(raw);
-      if (raw.toLowerCase().endsWith("k")) val = parseFloat(raw) * 1000;
-      else if (raw.toLowerCase().endsWith("m")) val = parseFloat(raw) * 1000000;
-      if (!isNaN(val)) {
-        if (id === "budgetMin") state.filters.budgetMin = Math.round(val / 1000);
-        else state.filters.budgetMax = Math.round(val / 1000);
-        updateMapMarkers();
-        renderDataBadge();
-        updateFbTxnCount();
-        renderPulsePanel();
-      }
-    });
-  });
 
   // Flat types — filter bar chips (desktop) and mobile sidebar chips
   const ftHtmlChip  = DB.flat_types.map(ft =>
@@ -1194,14 +1172,19 @@ function buildFilters() {
 
 function toggleType(ft) {
   const allTypes = DB.flat_types;
-  // "all active" state is represented by empty array (no filter).
-  // First click on any chip when all are active → switch to explicit mode with that one deselected.
+  // Bug 7: allow empty selection — deselecting last type results in zero types (no markers shown)
+  // Empty array = no types selected (show nothing). Different from old "all active" meaning.
   if (state.filters.types.length === 0) {
-    state.filters.types = allTypes.filter(t => t !== ft);
+    // Currently "all" — first click switches to single-type exclusive mode
+    state.filters.types = [ft];
   } else {
     const i = state.filters.types.indexOf(ft);
-    if (i >= 0) state.filters.types.splice(i, 1);
-    else state.filters.types.push(ft);
+    if (i >= 0) {
+      state.filters.types.splice(i, 1);
+      // Empty array is allowed — no auto-reset to all
+    } else {
+      state.filters.types.push(ft);
+    }
   }
   // Update chip visuals (both filter-bar chips and mobile sidebar chips)
   document.querySelectorAll("[data-type]").forEach(el => {
@@ -1209,6 +1192,7 @@ function toggleType(ft) {
   });
   updateMapMarkers();
   renderPulsePanel();
+  renderOpenDrawer(); // Bug 2+3: reactive drawer
 }
 
 function toggleLeaseYears(years, btn) {
@@ -1315,9 +1299,8 @@ window.clearFilters = () => {
   state.filters.budgetMax = 9999;
   // Reset all type chips (both filter bar and mobile)
   document.querySelectorAll("[data-type]").forEach(el => el.classList.add("active"));
-  // Reset budget inputs
-  const bMin = document.getElementById("budgetMin"); if (bMin) bMin.value = "";
-  const bMax = document.getElementById("budgetMax"); if (bMax) bMax.value = "";
+  // Reset budget chips (Bug 6)
+  document.querySelectorAll("#budgetChips .fb-year-chip").forEach(b => b.classList.remove("active"));
   // Reset lease year pickers
   state.filters.minLease = 1960;
   state.filters.maxLease = 2030;
@@ -1344,17 +1327,21 @@ window.clearFilters = () => {
   renderPulsePanel();
 };
 
-function townPassesFilter(summary) {
+function townPassesFilter(summary, townId) {
+  // Bug 7: empty types array = no types selected = nothing passes
   if (state.filters.types.length > 0) {
     const hasType = state.filters.types.some(ft => summary.type_medians && summary.type_medians[ft]);
     if (!hasType) return false;
   }
   const med = summary.median;
   if (med < state.filters.minPrice || med > state.filters.maxPrice) return false;
-  // Budget filter (from filter bar) — bMin/bMax in thousands, med in thousands
+  // Bug 6: budget filter applied after TxnYr+FlatType — use period-aware marker price
   const bMin = state.filters.budgetMin, bMax = state.filters.budgetMax;
-  if (bMin > 0 && med < bMin) return false;
-  if (bMax < 9999 && bMax > 0 && med > bMax) return false;
+  if (bMin > 0 || (bMax < 9999 && bMax > 0)) {
+    const { medK } = townId ? townMarkerPrice(summary, townId) : { medK: med };
+    if (bMin > 0 && medK < bMin) return false;
+    if (bMax < 9999 && bMax > 0 && medK > bMax) return false;
+  }
   return true;
 }
 
@@ -1461,18 +1448,32 @@ function updateZoomHint(z) {
 }
 
 /* ── Town markers (zoom 11–13) ──────────────────────────────────────────── */
-function townMarkerPrice(s) {
-  // Return the price string shown on the marker, or empty string to hide it
+function townMarkerPrice(s, townId) {
   const f = state.filters;
   const hasLeaseFilter = f.minLease > 1960 || f.maxLease < 2030;
-  // Hide price when lease filter is active (can't compute lease-filtered median per town)
-  if (hasLeaseFilter) return "";
-  // Show type-filtered median if types are selected
-  if (f.types.length > 0) {
-    const vals = f.types.map(ft => s.type_medians?.[ft]).filter(Boolean);
-    if (vals.length) return fmtKs(Math.round(vals.reduce((a, v) => a + v, 0) / vals.length));
+  if (hasLeaseFilter) return { price: "", medK: s.median };
+
+  // Fix #3: compute period-aware median from timeline
+  function periodTimelineMedian(tl) {
+    const slice = (tl || []).filter(d => d.med != null && parseInt(d.m) >= f.minTxnYear && parseInt(d.m) <= f.maxTxnYear);
+    if (!slice.length) return null;
+    const sorted = slice.map(d => d.med).sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
   }
-  return fmtKs(s.median);
+
+  if (f.types.length > 0) {
+    const vals = f.types.map(ft => {
+      const ftTl = DB.town_type_timelines?.[townId]?.[ft];
+      return periodTimelineMedian(ftTl) ?? s.type_medians?.[ft];
+    }).filter(Boolean);
+    if (vals.length) {
+      const medK = Math.round(vals.reduce((a, v) => a + v, 0) / vals.length);
+      return { price: fmtKs(medK), medK };
+    }
+  }
+
+  const medK = periodTimelineMedian(DB.town_timelines?.[townId]) ?? s.median;
+  return { price: fmtKs(medK), medK };
 }
 
 function renderTownMarkers() {
@@ -1484,9 +1485,9 @@ function renderTownMarkers() {
     const s = DB.town_summaries[townId];
     if (!s) return;
 
-    const passes = townPassesFilter(s);
-    const color  = tierColor(s.median);
-    const price  = townMarkerPrice(s);
+    const { price, medK } = townMarkerPrice(s, townId);
+    const passes = townPassesFilter(s, townId);
+    const color  = tierColor(medK);
     const icon   = L.divIcon({
       className: "town-marker",
       html: `<div class="town-marker-inner" style="${passes ? "" : "opacity:0.35"}">
@@ -1510,9 +1511,9 @@ function updateMapMarkers() {
     const s = DB.town_summaries[townId];
     const m = state.townMarkers[townId];
     if (!s || !m) return;
-    const passes = townPassesFilter(s);
-    const color  = tierColor(s.median);
-    const price  = townMarkerPrice(s);
+    const { price, medK } = townMarkerPrice(s, townId);
+    const passes = townPassesFilter(s, townId);
+    const color  = tierColor(medK);
     const inner  = m.getElement()?.querySelector(".town-marker-inner");
     if (inner) {
       inner.style.opacity = passes ? "1" : "0.3";
@@ -1666,44 +1667,71 @@ function hideBlockMarkers() {
   state.blockMarkers = [];
 }
 
-function showBlockPopup(marker, block, town, latlng) {
-  const filteredMed = blockFilteredMed(block);
+function buildBlockPopupContent(block, town) {
+  // Bug 8: use town-level type timeline sliced to TxnYr as proxy for block-level per-type median
   const f = state.filters;
   const yearLabel = f.minTxnYear === f.maxTxnYear ? `${f.minTxnYear}` : `${f.minTxnYear}–${f.maxTxnYear}`;
-  const rows = Object.entries(block.types || {})
-    .map(([ft, med]) => `<div class="bp-row"><span class="bp-type">${ft}</span><span class="bp-price">${fmtKs(med)}</span></div>`)
-    .join("");
-  const blockKey = `${block.town}|${block.block}|${block.street}`;
-  const isStarred = _shortlist.has(blockKey);
-  const html = `<div>
+  const townId = block.town;
+
+  function townTypePeriodMedian(ft) {
+    const ftTl = (DB.town_type_timelines?.[townId]?.[ft] || [])
+      .filter(d => d.med != null && parseInt(d.m) >= f.minTxnYear && parseInt(d.m) <= f.maxTxnYear);
+    if (!ftTl.length) return block.types?.[ft] ?? null; // fallback to all-time
+    const sorted = ftTl.map(d => d.med).sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
+  // Build rows: types that exist in this block, medians from town TL (town avg proxy) // APPROXIMATION: block-level type timelines unavailable; using town-level type timeline as proxy
+  const ftOrder = ["2 ROOM","3 ROOM","4 ROOM","5 ROOM","EXECUTIVE","MULTI-GENERATION"];
+  const blockFts = Object.keys(block.types || {});
+  const rows = blockFts.length
+    ? ftOrder.filter(ft => blockFts.includes(ft)).map(ft => {
+        const m = townTypePeriodMedian(ft);
+        const isProxy = !( (DB.town_type_timelines?.[townId]?.[ft] || []).filter(d => d.med != null && parseInt(d.m) >= f.minTxnYear && parseInt(d.m) <= f.maxTxnYear).length );
+        return `<div class="bp-row">
+          <span class="bp-type">${ft.replace(" ROOM","‑Rm").replace("EXECUTIVE","Exec")}</span>
+          <span class="bp-price">${m ? fmtKs(m) : "—"}${isProxy ? `<span style="font-size:9px;color:var(--ink-3);margin-left:3px">all-time</span>` : ""}</span>
+        </div>`;
+      }).join("")
+    : `<div class="bp-row"><span class="bp-type">All types</span><span class="bp-price">${fmtKs(blockFilteredMed(block))}</span></div>`;
+
+  return `<div>
     <div class="bp-header">
       <div class="bp-blk">Blk ${block.block}</div>
       <div class="bp-street">${block.street}</div>
     </div>
     <div class="bp-rows">
-      <div class="bp-row"><span class="bp-type" style="color:var(--ink-3)">Flat type</span><span class="bp-price" style="color:var(--ink-3)">Median (${yearLabel})</span></div>
-      ${rows || `<div class="bp-row"><span class="bp-type">All types</span><span class="bp-price">${fmtKs(filteredMed)}</span></div>`}
+      <div class="bp-row"><span class="bp-type" style="color:var(--ink-3)">Type</span><span class="bp-price" style="color:var(--ink-3)">${yearLabel} median</span></div>
+      ${rows}
     </div>
-    <div class="bp-actions">
-      <button class="bp-action-btn${isStarred ? ' bp-action-starred' : ''}" id="bpStarBtn_${block.block}" onclick="bpToggleShortlist('${blockKey}',this)">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="${isStarred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-        <span class="bp-star-lbl">${isStarred ? 'Shortlisted' : 'Shortlist'}</span>
-      </button>
-    </div>
+    <div style="font-size:10px;color:var(--ink-3);padding:4px 0 0;text-align:right">Town avg proxy · click town for block detail</div>
   </div>`;
-  L.popup({ className: "block-popup", closeButton: true, maxWidth: 260 })
-    .setLatLng(latlng).setContent(html).openOn(MAP);
 }
 
-window.bpToggleShortlist = function(blockKey, btn) {
-  _shortlist.toggle(blockKey);
-  const starred = _shortlist.has(blockKey);
-  btn.classList.toggle("bp-action-starred", starred);
-  btn.querySelector("svg").setAttribute("fill", starred ? "currentColor" : "none");
-  const lbl = btn.querySelector(".bp-star-lbl");
-  if (lbl) lbl.textContent = starred ? "Shortlisted" : "Shortlist";
-};
+function showBlockPopup(marker, block, town, latlng) {
+  const popup = L.popup({ className: "block-popup", closeButton: true, maxWidth: 280 })
+    .setLatLng(latlng)
+    .setContent(buildBlockPopupContent(block, town))
+    .openOn(MAP);
+  // Bug 8: store reference so we can update if filters change while popup is open
+  state.openBlockPopup = { popup, block, town, latlng };
+  popup.on("remove", () => { if (state.openBlockPopup?.popup === popup) state.openBlockPopup = null; });
+}
 
+
+/* ── Reactive open-drawer helper (Bugs 2+3) ──────────────────────────────── */
+// Re-renders the drawer if it's open, and refreshes any open block popup (Bug 8).
+function renderOpenDrawer() {
+  if (state.drawerOpen && state.activeTown) {
+    const s = DB.town_summaries[state.activeTown];
+    if (s) renderTownDrawer(s, state.activeTown);
+  }
+  // Bug 8: refresh open block popup when filters change
+  if (state.openBlockPopup) {
+    const { popup, block, town, latlng } = state.openBlockPopup;
+    popup.setContent(buildBlockPopupContent(block, town));
+  }
+}
 
 /* ── Town drawer ─────────────────────────────────────────────────────────── */
 function openTownDrawer(townId) {
@@ -1740,10 +1768,41 @@ function closeTownDrawer() {
 function renderTownDrawer(s, townId) {
   const f = state.filters;
   const minY = f.minTxnYear, maxY = f.maxTxnYear;
-  const tl = DB.town_timelines[townId] || [];
+  // Bug 2: incorporate LCD filter using town LCD band timeline
+  const hasLcd = f.minLease > 1960 || f.maxLease < 2030;
+  const lcdLo = hasLcd ? f.minLease : null;
+  const lcdHi = hasLcd ? f.maxLease : null;
+
+  // Get LCD-aware base timeline for this town
+  let baseTl = DB.town_timelines[townId] || [];
+  if (hasLcd) {
+    // Use town LCD band timelines merged for the active LCD range
+    const tempLcdState = { lcdMin: lcdLo, lcdMax: lcdHi };
+    const bands = DB.town_lcd_band_timelines?.[townId];
+    if (bands) {
+      const lo = lcdLo, hi = lcdHi;
+      const activeBands = Object.entries(bands).filter(([k]) => { const bs = parseInt(k); return (bs + 4) >= lo && bs <= hi; });
+      if (activeBands.length) {
+        const byMonth = {};
+        for (const [, tl2] of activeBands) {
+          for (const d of tl2) {
+            if (d.med == null || !d.vol) continue;
+            if (!byMonth[d.m]) byMonth[d.m] = { sumWtMed: 0, sumVol: 0 };
+            byMonth[d.m].sumWtMed += d.med * d.vol;
+            byMonth[d.m].sumVol   += d.vol;
+          }
+        }
+        baseTl = (DB.months || []).map(m => {
+          const e = byMonth[m];
+          if (!e || !e.sumVol) return { m, med: null, vol: 0 };
+          return { m, med: Math.round(e.sumWtMed / e.sumVol * 10) / 10, vol: e.sumVol };
+        });
+      }
+    }
+  }
 
   // Compute txn-year-filtered median + dpct from timeline
-  const tlInRange = tl.filter(d => d.med != null && parseInt(d.m) >= minY && parseInt(d.m) <= maxY);
+  const tlInRange = baseTl.filter(d => d.med != null && parseInt(d.m) >= minY && parseInt(d.m) <= maxY);
   const drawerMedian = (() => {
     if (!tlInRange.length) return s.median;
     const prices = tlInRange.map(d => d.med).sort((a, b) => a - b);
@@ -1754,43 +1813,72 @@ function renderTownDrawer(s, townId) {
     const first = tlInRange[0].med, last = tlInRange[tlInRange.length - 1].med;
     return first > 0 ? ((last - first) / first * 100) : 0;
   })();
-  // Filtered vol: sum vol_by_year across all blocks for this town
+  // Filtered vol: sum vol_by_year across LCD-matching blocks for this town
   const drawerVol = (() => {
     const blocks = state.blocksByTown[townId] || [];
-    if (!blocks.length) return s.vol;
+    const matchingBlocks = hasLcd ? blocks.filter(b => b.lcd != null && b.lcd >= (lcdLo ?? 0) && b.lcd <= (lcdHi ?? 9999)) : blocks;
+    if (!matchingBlocks.length) return s.vol;
     let v = 0;
-    for (const b of blocks) {
+    for (const b of matchingBlocks) {
       if (!b.vol_by_year) continue;
-      for (let y = minY; y <= maxY; y++) v += (b.vol_by_year[y] || 0);
+      for (let y = minY; y <= maxY; y++) v += (b.vol_by_year[String(y)] || 0);
     }
     return v || s.vol;
   })();
   const volLabel = minY === maxY ? `${minY}` : `${minY}–${maxY}`;
 
-  const spark = sparklineSVG(tlInRange.length >= 3 ? tlInRange : tl.slice(-24), { w: 370, h: 60, color: "var(--accent)" });
+  const spark = sparklineSVG(tlInRange.length >= 3 ? tlInRange : baseTl.slice(-24), { w: 370, h: 60, color: "var(--accent)" });
 
-  const typeBars = Object.entries(s.type_mix || {}).map(([ft, pct]) => {
-    const med = s.type_medians?.[ft];
-    return `<div class="type-bar-row">
+  // Fix #1: period-aware $/sqm and P25/P75 from timeline
+  const drawerPpsqm = (() => {
+    const vals = tlInRange.map(d => d.ppsqm).filter(v => v != null).sort((a, b) => a - b);
+    return vals.length ? vals[Math.floor(vals.length / 2)] : s.ppsqm;
+  })();
+  const drawerP25 = tlInRange.length >= 4
+    ? (() => { const v = tlInRange.map(d => d.med).sort((a,b)=>a-b); return v[Math.floor(v.length*0.25)]; })()
+    : s.p25;
+  const drawerP75 = tlInRange.length >= 4
+    ? (() => { const v = tlInRange.map(d => d.med).sort((a,b)=>a-b); return v[Math.floor(v.length*0.75)]; })()
+    : s.p75;
+
+  // Bug 5: type mix always shows ALL types (no FlatType filter), but uses TxnYr+LCD window
+  const drawerTypeBarsData = (() => {
+    const ftOrder = ["2 ROOM","3 ROOM","4 ROOM","5 ROOM","EXECUTIVE","MULTI-GENERATION"];
+    const ftVols = {};
+    let total = 0;
+    for (const ft of ftOrder) {
+      // Always iterate all types regardless of f.types (Bug 5)
+      const ftTl = (DB.town_type_timelines?.[townId]?.[ft] || [])
+        .filter(d => d.med != null && parseInt(d.m) >= minY && parseInt(d.m) <= maxY);
+      const vol = ftTl.reduce((s2, d) => s2 + (d.vol || 0), 0);
+      if (vol > 0) { ftVols[ft] = { vol, ftTl }; total += vol; }
+    }
+    return ftOrder.filter(ft => ftVols[ft]).map(ft => {
+      const { vol, ftTl } = ftVols[ft];
+      const pct = total > 0 ? Math.round(vol / total * 100) : 0;
+      const sorted = ftTl.map(d => d.med).sort((a,b)=>a-b);
+      const med = sorted.length ? sorted[Math.floor(sorted.length/2)] : s.type_medians?.[ft];
+      return { ft, pct, med };
+    });
+  })();
+
+  const typeBars = (drawerTypeBarsData.length > 0
+    ? drawerTypeBarsData
+    : Object.entries(s.type_mix || {}).map(([ft, pct]) => ({ ft, pct, med: s.type_medians?.[ft] }))
+  ).map(({ ft, pct, med }) =>
+    `<div class="type-bar-row">
       <span class="type-bar-label">${ft.replace(" ROOM","R").replace("EXECUTIVE","Exec")}</span>
       <div class="type-bar-track"><div class="type-bar-fill" style="width:${pct}%"></div></div>
       <span class="type-bar-pct">${pct}%</span>
       <span class="type-bar-med">${med ? fmtKs(med) : "—"}</span>
-    </div>`;
-  }).join("");
+    </div>`
+  ).join("");
 
-  const isStarred = _shortlist.has(townId);
   document.getElementById("townDrawer").innerHTML = `
     <div class="town-drawer-hero">
       <div style="width:100%;height:100%;background:linear-gradient(135deg,var(--bg-2) 0%,var(--bg-3) 100%);">
-        <div style="padding:14px 14px 0;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="padding:14px 14px 0;display:flex;align-items:center;gap:10px;">
           <span style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.1em">${s.region}</span>
-          <div style="display:flex;align-items:center;gap:6px;">
-            ${deltaPill(drawerDpct)}
-            <button class="star-btn${isStarred ? ' starred' : ''}" data-town="${townId}" onclick="_shortlist.toggle('${townId}');updateShortlistUI();this.classList.toggle('starred')" title="${isStarred ? 'Remove from shortlist' : 'Add to shortlist'}">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="${isStarred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-            </button>
-          </div>
         </div>
       </div>
       <div class="town-drawer-hero-overlay"></div>
@@ -1811,7 +1899,7 @@ function renderTownDrawer(s, townId) {
         </div>
         <div class="drawer-stat">
           <div class="drawer-stat-label">$/sqm</div>
-          <div class="drawer-stat-value">$${s.ppsqm.toLocaleString()}</div>
+          <div class="drawer-stat-value">$${(drawerPpsqm || 0).toLocaleString()}</div>
           <div class="drawer-stat-sub" style="color:var(--ink-3);font-size:10px">per sqm</div>
         </div>
         <div class="drawer-stat">
@@ -1823,7 +1911,7 @@ function renderTownDrawer(s, townId) {
 
       <div>
         <div class="drawer-section-title">Price range (P25–P75)</div>
-        <div style="font-size:13px;color:var(--ink-2)">${fmtKs(s.p25)} <span style="color:var(--ink-3)">–</span> ${fmtKs(s.p75)}</div>
+        <div style="font-size:13px;color:var(--ink-2)">${fmtKs(drawerP25)} <span style="color:var(--ink-3)">–</span> ${fmtKs(drawerP75)}</div>
       </div>
 
       <div>
@@ -1837,25 +1925,12 @@ function renderTownDrawer(s, townId) {
       </div>
     </div>
     <div class="drawer-footer-btns">
-      <button class="btn-secondary${isStarred ? ' starred' : ''}" id="drawerStarBtn_${townId}" onclick="drawerToggleShortlist('${townId}',this)">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="${isStarred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-        <span class="btn-lbl">${isStarred ? 'Shortlisted' : 'Shortlist'}</span>
-      </button>
       <button class="drawer-open-btn" onclick="openTownDashboard('${townId}')">
         Open ${Icons.back.replace('stroke-linecap="round" stroke-linejoin="round">', 'stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(180deg)">')}
       </button>
     </div>
   `;
 }
-
-window.drawerToggleShortlist = function(townId, btn) {
-  _shortlist.toggle(townId);
-  const starred = _shortlist.has(townId);
-  btn.classList.toggle("starred", starred);
-  btn.querySelector("svg").setAttribute("fill", starred ? "currentColor" : "none");
-  const lbl = btn.querySelector(".btn-lbl");
-  if (lbl) lbl.textContent = starred ? "Shortlisted" : "Shortlist";
-};
 
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1869,7 +1944,7 @@ function openTownDashboard(townId) {
     townDashState.lcdMin = null;
     townDashState.lcdMax = null;
     townDashState._decadeFilter = null;
-    townDashState._txnShown = 20;
+    townDashState._txnShown = 25;
   }
   showView("town");
   renderTownDashboard(townId);
@@ -2026,7 +2101,20 @@ function buildTypeTrendChart(townId, W = 620, sliceTlFn = null, lcdTl = null) {
 
 
 // ── Town filter helpers ──────────────────────────────────────────────────────
-window.setTownPeriod = (p) => { townDashState.period = p.toLowerCase(); if (townDashState.townId) renderTownDashboard(townDashState.townId); };
+window.setTownPeriod = (p) => {
+  const curYear = 2026;
+  const lo = p === "1y" ? curYear : p === "3y" ? curYear - 2 : p === "5y" ? curYear - 4 : 2017;
+  state.filters.minTxnYear = lo;
+  state.filters.maxTxnYear = curYear;
+  trendsState.period = p; // keep trendsState in sync
+  // Sync the map's txn year chips
+  document.querySelectorAll("#txnYearChips .fb-year-chip").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll("#txnYearChips .fb-year-chip")[p === "1y" ? 0 : p === "3y" ? 1 : p === "5y" ? 2 : 3]?.classList.add("active");
+  renderDataBadge();
+  updateFbTxnCount();
+  renderPulsePanel();
+  if (townDashState.townId) renderTownDashboard(townDashState.townId);
+};
 window.setTownFlatType = (ft) => { townDashState.flatType = ft; renderTownDashboard(townDashState.townId); };
 window.tdLcdInput = () => {
   const lo = document.getElementById("tdLcdLo"), hi = document.getElementById("tdLcdHi");
@@ -2053,7 +2141,7 @@ window.tdFilterBlocks = () => {
     row.style.display = (row.dataset.search || "").includes(q) ? "" : "none";
   });
 };
-window.tdShowMoreTxns = () => { townDashState._txnShown = (townDashState._txnShown || 30) + 30; renderTownDashboard(townDashState.townId); };
+window.tdShowMoreTxns = () => { townDashState._txnShown = (townDashState._txnShown || 25) + 25; renderTownDashboard(townDashState.townId); };
 
 function renderTownDashboard(townId) {
   const s  = DB.town_summaries[townId];
@@ -2061,7 +2149,10 @@ function renderTownDashboard(townId) {
   if (!s) return;
 
   townDashState.townId = townId;
-  const { period, flatType, lcdMin, lcdMax, _decadeFilter, _txnShown } = townDashState;
+  const { flatType, lcdMin, lcdMax, _decadeFilter, _txnShown } = townDashState;
+  const minTxnYear = state.filters.minTxnYear;
+  const maxTxnYear = state.filters.maxTxnYear;
+  const period = getTownPeriodKey();
 
   // ── Timeline helpers ──────────────────────────────────────────────────────
   const lcdActive = lcdMin != null || lcdMax != null;
@@ -2119,10 +2210,10 @@ function renderTownDashboard(townId) {
   // lcdChartTl: pass to buildTypeTrendChart when LCD is active so it uses the filtered axis
   const lcdChartTl = mergedLcdTl ? mergedLcdTl.filter(d => d.med != null) : null;
   function sliceTl(arr) {
-    if (period === "1y") return arr.slice(-12);
-    if (period === "3y") return arr.slice(-36);
-    if (period === "5y") return arr.slice(-60);
-    return arr;
+    return arr.filter(d => {
+      const y = parseInt(d.m);
+      return y >= minTxnYear && y <= maxTxnYear;
+    });
   }
   const periodTl = sliceTl(fullTl);
 
@@ -2137,7 +2228,7 @@ function renderTownDashboard(townId) {
     const first = periodTl[0].med, last = periodTl[periodTl.length - 1].med;
     return first > 0 ? (last - first) / first * 100 : 0;
   })();
-  const periodLabel = period === "1y" ? "1Y" : period === "3y" ? "3Y" : period === "5y" ? "5Y" : "All-time";
+  const periodLabel = getTownPeriodLabel();
   const periodStart = periodTl.length ? fmtMonth(periodTl[0].m) : "";
   const periodEnd   = periodTl.length ? fmtMonth(periodTl[periodTl.length - 1].m) : "";
 
@@ -2145,11 +2236,10 @@ function renderTownDashboard(townId) {
   const allBlocks = state.blocksByTown[townId] || [];
   const periodVol = (() => {
     if (!periodTl.length) return s.vol;
-    const minY = parseInt(periodTl[0].m), maxY = parseInt(periodTl[periodTl.length - 1].m);
     let v = 0;
     for (const b of allBlocks) {
       if (!b.vol_by_year) continue;
-      for (let y = minY; y <= maxY; y++) v += (b.vol_by_year[String(y)] || 0);
+      for (let y = minTxnYear; y <= maxTxnYear; y++) v += (b.vol_by_year[String(y)] || 0);
     }
     return v || s.vol;
   })();
@@ -2157,8 +2247,6 @@ function renderTownDashboard(townId) {
   // Hide legacy header
   const legacyHeader = document.getElementById("townViewHeader");
   if (legacyHeader) legacyHeader.style.display = "none";
-
-  const isTownStarred = _shortlist.has(townId);
 
   // ── Shared helpers ────────────────────────────────────────────────────────
   function sectionHeader(num, title, sub) {
@@ -2176,11 +2264,12 @@ function renderTownDashboard(townId) {
   const lcdFillLeft  = ((lcdLoVal - lcdMn) / lcdRange * 100).toFixed(1);
   const lcdFillRight = (100 - (lcdHiVal - lcdMn) / lcdRange * 100).toFixed(1);
 
-  // ── recent_txns filtered by flat type + LCD (no period — all txns are recent) ─
-  // recent_txns only spans the last 1-2 months, so period filter does nothing useful.
-  // Use for: median lease, storey premium, matching blocks display, recent txns table.
+  // ── recent_txns filtered by period, flat type, and LCD ─────────────────────
   const allTxnsRaw = s.recent_txns || [];
-  let filtTxnsBase = allTxnsRaw;
+  let filtTxnsBase = allTxnsRaw.filter(t => {
+    const y = parseInt(t.month.substring(0, 4));
+    return y >= minTxnYear && y <= maxTxnYear;
+  });
   if (flatType !== "ALL") filtTxnsBase = filtTxnsBase.filter(t => t.type === flatType);
   if (lcdActive)          filtTxnsBase = filtTxnsBase.filter(t => t.lcd != null && Number(t.lcd) >= lcdLo && Number(t.lcd) <= lcdHi);
 
@@ -2197,19 +2286,11 @@ function renderTownDashboard(townId) {
     return vals.length ? vals[Math.floor(vals.length / 2)] : (s.ppsqm || 0);
   })();
 
-  // ── Block filtering (LCD + decade + flat type via recent_txns) ──────────
-  const minPY = periodTl.length ? parseInt(periodTl[0].m) : 0;
-  const maxPY = periodTl.length ? parseInt(periodTl[periodTl.length - 1].m) : 9999;
-
-  // Blocks that had txns for the selected flat type (from recent_txns)
-  const blocksWithFtTxns = flatType !== "ALL"
-    ? new Set(allTxnsRaw.filter(t => t.type === flatType).map(t => `${t.block}|${t.street}`))
-    : null;
-
+  // ── Block filtering (LCD + decade + flat type via vol_by_type) ──────────
   let filteredBlocks = allBlocks.map(b => {
     let vol = 0;
     if (b.vol_by_year) {
-      for (let y = minPY; y <= maxPY; y++) vol += (b.vol_by_year[String(y)] || 0);
+      for (let y = minTxnYear; y <= maxTxnYear; y++) vol += (b.vol_by_year[String(y)] || 0);
     } else {
       vol = b.vol || 0;
     }
@@ -2223,8 +2304,9 @@ function renderTownDashboard(townId) {
   if (_decadeFilter != null) {
     filteredBlocks = filteredBlocks.filter(b => b.lcdYear != null && Math.floor(b.lcdYear / 10) * 10 === _decadeFilter);
   }
-  if (blocksWithFtTxns) {
-    filteredBlocks = filteredBlocks.filter(b => blocksWithFtTxns.has(`${b.block}|${b.street}`));
+  // Fix #7: use vol_by_type (all-time count) instead of recent_txns to determine block flat type eligibility
+  if (flatType !== "ALL") {
+    filteredBlocks = filteredBlocks.filter(b => (b.vol_by_type?.[flatType] || 0) > 0);
   }
   const uniqueBlockCount = filteredBlocks.length;
 
@@ -2264,10 +2346,6 @@ function renderTownDashboard(townId) {
         <div class="town-hero-name">${s.name}</div>
         <div class="town-hero-region">${periodVol.toLocaleString()} transactions · ${periodLabel}${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}${lcdActive ? " · Built " + lcdLoVal + "–" + lcdHiVal : ""}</div>
       </div>
-      <button class="btn-secondary${isTownStarred ? " starred" : ""}" id="tdStarBtn"
-        onclick="_shortlist.toggle('${townId}'); updateShortlistUI(); this.classList.toggle('starred'); this.textContent = _shortlist.has('${townId}') ? '★ Saved' : '☆ Save';">
-        ${isTownStarred ? "★ Saved" : "☆ Save"}
-      </button>
     </div>
     <div class="town-hero-bottom">
       <div class="town-strip town-strip--6">
@@ -2465,7 +2543,7 @@ function renderTownDashboard(townId) {
           <div class="td-spark-wrap" id="townChartWrap">${buildTypeTrendChart(townId, 620, sliceTl, lcdChartTl)}</div>
         </div>
         <div class="td-type-panel">
-          <div class="td-card-title">By flat type <span class="td-card-note">click to filter</span></div>
+          <div class="td-card-title">By flat type <span class="td-card-note">${lcdActive ? "all-time · click to filter" : periodLabel + " · click to filter"}</span></div>
           <div class="td-ftb-header">
             <span></span><span></span><span></span>
             <span class="td-ftb-col-hdr">Median</span>
@@ -2473,7 +2551,7 @@ function renderTownDashboard(townId) {
             <span class="td-ftb-col-hdr">% sales</span>
           </div>
           ${typeBreakdownHtml}
-          <div class="td-type-panel-divider">Storey premium <span style="font-size:10px;color:var(--ink-3);font-weight:400">${flatType !== "ALL" ? flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : "all types"} · filter-aware</span></div>
+          <div class="td-type-panel-divider">Storey premium <span style="font-size:10px;color:var(--ink-3);font-weight:400">${periodLabel} · all types</span></div>
           ${storeyGridHtml}
         </div>
       </div>
@@ -2517,13 +2595,9 @@ function renderTownDashboard(townId) {
             <th class="num" data-tip="Year lease commenced">Built</th>
             <th class="num" data-tip="Remaining lease years (approx)">Lease left</th>
             <th class="num">${periodLabel} txns</th>
-            <th class="num" style="text-align:right">Median</th>
-            <th></th>
+            <th class="num" style="text-align:right" data-tip="All-time median — per-block period breakdown not available">Median</th>
           </tr></thead>
           <tbody>${blocksSlice.map(b => {
-            const blockKey = `${townId}|${b.block}|${b.street}`;
-            const bkEsc    = blockKey.replace(/'/g, "\\'");
-            const isStar   = _shortlist.has(blockKey);
             const lcdStr   = b.lcdYear != null ? String(b.lcdYear) : "—";
             const leaseStr = b.remLease != null ? b.remLease + "y" : "—";
             const leaseCol = b.remLease != null && b.remLease < 60 ? "var(--red)"
@@ -2538,32 +2612,38 @@ function renderTownDashboard(townId) {
               <td class="num" style="color:${leaseCol};font-weight:700">${leaseStr}</td>
               <td class="num" style="${txnStyle}">${b.periodVol || "—"}</td>
               <td class="num" style="text-align:right;font-weight:700">${medStr}</td>
-              <td><button class="block-star-btn${isStar ? " starred" : ""}"
-                onclick="_shortlist.toggle('${bkEsc}'); this.classList.toggle('starred'); updateShortlistUI();" title="Shortlist">★</button></td>
             </tr>`;
           }).join("")}</tbody>
         </table>
         ${blocksShowMoreBtn}
       </div>`;
 
+  // Fix #10: compute period-aware median for each town using its timeline
   const med = periodMedian;
+  function txnYearMedian(tid) {
+    const ttl = (DB.town_timelines[tid] || []).filter(d => d.med != null && parseInt(d.m) >= minTxnYear && parseInt(d.m) <= maxTxnYear);
+    if (!ttl.length) return DB.town_summaries[tid]?.median;
+    const sorted = ttl.map(d => d.med).sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  }
+
   const comparable = DB.towns
     .filter(id => id !== townId)
-    .map(id => ({ id, cs: DB.town_summaries[id] }))
-    .filter(({ cs }) => cs && cs.median && Math.abs(cs.median - med) / med <= 0.20)
-    .sort((a, b) => Math.abs(a.cs.median - med) - Math.abs(b.cs.median - med))
+    .map(id => ({ id, cs: DB.town_summaries[id], compMed: txnYearMedian(id) }))
+    .filter(({ compMed }) => compMed != null && Math.abs(compMed - med) / med <= 0.20)
+    .sort((a, b) => Math.abs(a.compMed - med) - Math.abs(b.compMed - med))
     .slice(0, 3);
 
   const simTownsHtml = comparable.length
-    ? comparable.map(({ id, cs }) => {
-        const diff     = Math.round((cs.median - med) * 10) / 10;
+    ? comparable.map(({ id, cs, compMed }) => {
+        const diff     = Math.round((compMed - med) * 10) / 10;
         const ppsqmSim = cs.ppsqm || 0;
         return `<div class="sim-town-row" onclick="openTownDashboard('${id}')">
           <div style="flex:1;min-width:0">
             <div class="block-row-name">${cs.name}</div>
             <div class="block-row-street">${cs.region} · ${cs.med_lease ?? "?"}y lease · $${ppsqmSim.toLocaleString()}/m²</div>
           </div>
-          <span class="block-row-med">${fmtKs(cs.median)}</span>
+          <span class="block-row-med">${fmtKs(compMed)}</span>
           <span style="font-size:11px;font-weight:700;color:${diff > 0 ? "var(--red)" : "var(--green)"};width:54px;text-align:right;flex-shrink:0">${diff > 0 ? "+" : ""}$${diff}k</span>
         </div>`;
       }).join("")
@@ -2573,7 +2653,7 @@ function renderTownDashboard(townId) {
     ${sectionHeader(2, "Where people are buying", `${allFilteredBlocks.length} blocks${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}${lcdActive ? " · built " + lcdLoVal + "–" + lcdHiVal : ""}`)}
     <div class="td-card td-col-7 td-card--equal-height">
       <div class="td-card-title">All Blocks
-        <span class="td-card-note">txns desc · ★ to shortlist</span>
+        <span class="td-card-note">sorted by txns</span>
         ${flatType !== "ALL" ? `<span class="td-filter-badge">${flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec")}</span>` : ""}
         ${lcdActive ? `<span class="td-filter-badge">Built ${lcdLoVal}–${lcdHiVal}</span>` : ""}
         ${_decadeFilter != null ? `<span class="td-filter-badge">${_decadeFilter}s</span>` : ""}
@@ -2586,10 +2666,11 @@ function renderTownDashboard(townId) {
       <div id="tdMiniMapWrap" style="margin-top:12px;border-radius:var(--r-sm);overflow:hidden;min-height:160px;flex:1"></div>
     </div>`;
 
-  // ── Section 3: Recent transactions (filter-aware) ────────────────────────
-  const shown    = 20;
-  const allTxns  = filtTxnsBase; // already filtered by flatType + LCD
-  const txnSlice = allTxns.slice(0, shown);
+  // ── Section 3: Recent transactions (filter-aware, paginated) ───────────────
+  const allTxns  = filtTxnsBase; // filtered by period + flatType + LCD
+  const txnPageSize = 25;
+  const txnShown = Math.min(_txnShown || txnPageSize, allTxns.length);
+  const txnSlice = allTxns.slice(0, txnShown);
   const txnRows = txnSlice.map(t => {
     const low   = t.lease_yrs != null && t.lease_yrs < 60;
     const ppsqm = t.floor_area_sqm ? Math.round((t.price / 1000) / t.floor_area_sqm * 1000) : null;
@@ -2614,8 +2695,14 @@ function renderTownDashboard(townId) {
     </tr>`;
   }).join("") || `<tr><td colspan="7" class="empty-state">No recent transactions</td></tr>`;
 
+  const txnTypeLabel = flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : "";
+  const txnLoadMoreBtn = allTxns.length > txnShown
+    ? `<div style="text-align:center;padding:12px 0 4px">
+        <button class="btn-secondary" onclick="tdShowMoreTxns()">Show more (${allTxns.length - txnShown} remaining)</button>
+       </div>`
+    : "";
   const sec4 = `
-    ${sectionHeader(3, "Recent transactions", `Latest ${txnSlice.length} of ${allTxns.length} sales${flatType !== "ALL" ? " · " + flatType.replace(" ROOM"," Rm").replace("EXECUTIVE","Exec") : ""}`)}
+    ${sectionHeader(3, "Recent transactions", `Showing ${txnShown} of ${allTxns.length} sales${txnTypeLabel}`)}
     <div class="td-card td-col-12">
       <div class="td-card-title">Recent Transactions <span class="td-card-note">most recent first</span></div>
       <div style="overflow:auto;max-height:520px">
@@ -2624,6 +2711,7 @@ function renderTownDashboard(townId) {
           <tbody>${txnRows}</tbody>
         </table>
       </div>
+      ${txnLoadMoreBtn}
     </div>`;
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -2700,15 +2788,36 @@ function renderTownDashboard(townId) {
    TOWN DASHBOARD STATE
    ══════════════════════════════════════════════════════════════════════════ */
 const townDashState  = {
-  period: "all",   // "1y"|"3y"|"5y"|"all"
+  // period is now derived from state.filters.minTxnYear/maxTxnYear (shared with map)
   townId: null,
   flatType: "ALL", // "ALL"|"2 ROOM"|"3 ROOM"|"4 ROOM"|"5 ROOM"|"EXECUTIVE"|"MULTI-GENERATION"
   lcdMin: null,    // null = no filter, number = year
   lcdMax: null,
   _lcdTrackPending: false,
   _decadeFilter: null, // decade number or null
-  _txnShown: 20,   // how many txn rows shown
+  _txnShown: 25,   // how many txn rows shown
 };
+
+// Helper: derive a display label from the shared txn year filter
+function getTownPeriodLabel() {
+  const { minTxnYear, maxTxnYear } = state.filters;
+  const curYear = 2026;
+  if (minTxnYear === maxTxnYear && maxTxnYear === curYear) return "1Y";
+  if (minTxnYear === curYear - 2) return "3Y";
+  if (minTxnYear === curYear - 4) return "5Y";
+  if (minTxnYear <= 2017) return "All";
+  return `${minTxnYear}–${maxTxnYear}`;
+}
+
+// Helper: returns which period button should be active
+function getTownPeriodKey() {
+  const { minTxnYear, maxTxnYear } = state.filters;
+  const curYear = 2026;
+  if (minTxnYear === maxTxnYear && maxTxnYear === curYear) return "1y";
+  if (minTxnYear === curYear - 2) return "3y";
+  if (minTxnYear === curYear - 4) return "5y";
+  return "all";
+}
 
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -2857,12 +2966,10 @@ function lcdBlocksVol(blocks, minY, maxY, ft) {
 }
 
 function getFilteredTownTL(id) {
+  // Bug 11: must incorporate FlatType filter — getTrendsTownTL already handles LCD+type
   const full = getTrendsTownTL(id).filter(t => t.med != null);
-  const p = trendsState.period;
-  if (p === "1y") return full.slice(-12);
-  if (p === "3y") return full.slice(-36);
-  if (p === "5y") return full.slice(-60);
-  return full;
+  const { minTxnYear, maxTxnYear } = state.filters;
+  return full.filter(d => { const y = parseInt(d.m); return y >= minTxnYear && y <= maxTxnYear; });
 }
 
 const HDB_FLOOR_AREA = {
@@ -2934,7 +3041,6 @@ function renderTrends() {
   if (!validNat.length) return;
   const latest  = validNat[validNat.length - 1];
   const first   = validNat[0];
-  const p = trendsState.period;
   const ft = trendsState.flatType;
   const lcdActive = trendsState.lcdMin != null || trendsState.lcdMax != null;
   const lcdLabel  = lcdActive
@@ -2946,7 +3052,7 @@ function renderTrends() {
   const maxY = validNat.length ? parseInt(validNat[validNat.length - 1].m) : 9999;
   // validNat already reflects LCD band timeline (via getFilteredNatTL) when filter active
   const totalVol  = validNat.reduce((s, d) => s + (d.vol || 0), 0);
-  const periodLabel = p === "1y" ? "1Y" : p === "3y" ? "3Y" : p === "5y" ? "5Y" : "All-time";
+  const periodLabel = getTownPeriodLabel();
   const periodLen = validNat.length;
 
   // Period median of monthly medians in window
@@ -3040,6 +3146,7 @@ function renderTrends() {
   };
 
   const computePpsqmFromTimeline = (monthSet) => {
+    // Bug 10: use actual ppsqm field when available; fall back to estimated from floor area
     const ntt = DB.national_type_timelines || {};
     const typesToUse = ft === "ALL" ? Object.keys(HDB_FLOOR_AREA) : [ft];
     let totalW = 0, weightedSum = 0;
@@ -3048,7 +3155,9 @@ function renderTrends() {
       if (!area) continue;
       const entries = (ntt[type] || []).filter(d => monthSet.has(d.m) && d.med != null && d.vol > 0);
       for (const d of entries) {
-        weightedSum += (d.med * 1000 / area) * d.vol;
+        // Use actual ppsqm field if present, otherwise estimate from median ÷ floor area
+        const ppsqmVal = (d.ppsqm != null) ? d.ppsqm : (d.med * 1000 / area);
+        weightedSum += ppsqmVal * d.vol;
         totalW += d.vol;
       }
     }
@@ -3341,14 +3450,10 @@ function buildTownGrid(sorted) {
 }
 
 function getFilteredNatTL() {
-  // When LCD filter active, use merged band timeline instead of national timeline
   const lcdTL = getLcdBandTimeline();
   const tl = lcdTL || getTrendsNatTL();
-  const p  = trendsState.period;
-  if (p === "1y") return tl.slice(-12);
-  if (p === "3y") return tl.slice(-36);
-  if (p === "5y") return tl.slice(-60);
-  return tl;
+  const { minTxnYear, maxTxnYear } = state.filters;
+  return tl.filter(d => { const y = parseInt(d.m); return y >= minTxnYear && y <= maxTxnYear; });
 }
 
 function buildComboChart(W = 800, refMedian = null, H = null) {
@@ -3362,10 +3467,10 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
 
   // ── Collect overlay town data (for Y-range expansion) ──
   const overlayTownArr = [...trendsState.overlayTowns];
+  const { minTxnYear, maxTxnYear } = state.filters;
   const overlayData = overlayTownArr.map(id => {
-    const full   = getTrendsTownTL(id);
-    const offset = getTrendsNatTL().length - tl.length;
-    return full.slice(offset).filter(d => d.med != null);
+    const full = getTrendsTownTL(id);
+    return full.filter(d => d.med != null && parseInt(d.m) >= minTxnYear && parseInt(d.m) <= maxTxnYear);
   });
 
   // ── Price scale (left axis) ──
@@ -3413,7 +3518,7 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
     const v = minP + (maxP - minP) * (i / 4);
     const y = py(v);
     return `<line x1="${pad.l-4}" y1="${y.toFixed(1)}" x2="${W-pad.r}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
-            <text x="${pad.l-8}" y="${(y+4).toFixed(1)}" font-size="10" fill="var(--ink-3)" text-anchor="end" font-family="Inter,sans-serif">$${Math.round(v)}k</text>`;
+            <text x="${pad.l-8}" y="${(y+4).toFixed(1)}" font-size="11" fill="var(--ink-3)" text-anchor="end" font-family="Inter,sans-serif">$${Math.round(v)}k</text>`;
   }).join("");
 
   // ── Right Y-axis (volume) — 3 ticks, placed just right of chart area ──
@@ -3421,7 +3526,7 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
   const volTicksHTML = Array.from({length: 3}, (_, i) => {
     const v = maxVol * (i + 1) / 3;
     const y = pad.t + chartH - (v / maxVol) * chartH;
-    return `<text x="${chartRight + 6}" y="${(y+4).toFixed(1)}" font-size="9" fill="var(--ink-3)" text-anchor="start" font-family="Inter,sans-serif">${(v/1000).toFixed(1)}k</text>`;
+    return `<text x="${chartRight + 6}" y="${(y+4).toFixed(1)}" font-size="11" fill="var(--ink-3)" text-anchor="start" font-family="Inter,sans-serif">${(v/1000).toFixed(1)}k</text>`;
   }).join("");
 
   // ── X-axis labels ──
@@ -3431,11 +3536,11 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
     const yr = d.m.slice(0, 4);
     if (seenYears.has(yr)) return "";
     seenYears.add(yr);
-    return `<text x="${px(i).toFixed(1)}" y="${H}" font-size="10" fill="var(--ink-3)" text-anchor="middle" font-family="Inter,sans-serif">${yr}</text>`;
+    return `<text x="${px(i).toFixed(1)}" y="${H}" font-size="11" fill="var(--ink-3)" text-anchor="middle" font-family="Inter,sans-serif">${yr}</text>`;
   }).join("");
 
   // ── Right-axis label ──
-  const volAxisLbl = `<text x="${chartRight+6}" y="${pad.t-4}" font-size="9" fill="var(--ink-3)" font-family="Inter,sans-serif">vol</text>`;
+  const volAxisLbl = `<text x="${chartRight+6}" y="${pad.t-4}" font-size="11" fill="var(--ink-3)" font-family="Inter,sans-serif">vol</text>`;
 
   // ── Town overlay lines ──
   // First pass: collect paths + endpoint positions
@@ -3495,7 +3600,7 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
   }).join("");
 
   // ── Axis labels ──
-  const leftAxisLbl = `<text x="10" y="${(H/2).toFixed(1)}" font-size="9" fill="var(--ink-3)" font-family="Inter,sans-serif" text-anchor="middle" transform="rotate(-90,10,${(H/2).toFixed(1)})">Median $k</text>`;
+  const leftAxisLbl = `<text x="10" y="${(H/2).toFixed(1)}" font-size="11" fill="var(--ink-3)" font-family="Inter,sans-serif" text-anchor="middle" transform="rotate(-90,10,${(H/2).toFixed(1)})">Median $k</text>`;
 
   return `<svg id="trendsChart" width="100%" height="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
       style="display:block;cursor:crosshair;overflow:visible"
@@ -3530,9 +3635,9 @@ function buildComboChart(W = 800, refMedian = null, H = null) {
     <line id="chartCross" x1="0" y1="${pad.t}" x2="0" y2="${H-pad.b}" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
     <circle id="chartDot" cx="0" cy="0" r="4" fill="var(--accent)" stroke="var(--bg-1)" stroke-width="2" visibility="hidden"/>
     <rect id="chartTipBg" x="0" y="0" width="130" height="46" rx="6" fill="var(--surface)" stroke="var(--line-2)" stroke-width="1" visibility="hidden"/>
-    <text id="chartTipVal" x="0" y="0" font-size="12" font-weight="700" fill="var(--ink)" font-family="Inter,sans-serif" visibility="hidden"></text>
-    <text id="chartTipVol" x="0" y="0" font-size="10" fill="var(--ink-3)" font-family="Inter,sans-serif" visibility="hidden"></text>
-    <text id="chartTipMon" x="0" y="0" font-size="10" fill="var(--ink-3)" font-family="Inter,sans-serif" visibility="hidden"></text>
+    <text id="chartTipVal" x="0" y="0" font-size="13" font-weight="700" fill="var(--ink)" font-family="Inter,sans-serif" visibility="hidden"></text>
+    <text id="chartTipVol" x="0" y="0" font-size="11" fill="var(--ink-3)" font-family="Inter,sans-serif" visibility="hidden"></text>
+    <text id="chartTipMon" x="0" y="0" font-size="11" fill="var(--ink-3)" font-family="Inter,sans-serif" visibility="hidden"></text>
   </svg>`;
 }
 
@@ -3663,7 +3768,15 @@ function attachChartListeners() {
 }
 
 window.setTrendsPeriod = (p) => {
-  trendsState.period = p.toLowerCase();
+  const key = p.toLowerCase();
+  trendsState.period = key;
+  // Sync to shared filter state (same as setTownPeriod)
+  const curYear = 2026;
+  const lo = key === "1y" ? curYear : key === "3y" ? curYear - 2 : key === "5y" ? curYear - 4 : 2017;
+  state.filters.minTxnYear = lo;
+  state.filters.maxTxnYear = curYear;
+  renderDataBadge();
+  updateFbTxnCount();
   renderTrends();
 };
 
@@ -3753,9 +3866,119 @@ window.openTownDrawer         = openTownDrawer;
 window.closeTownDrawer        = closeTownDrawer;
 window.openTownDashboard      = openTownDashboard;
 window.resetFilters           = window.clearFilters;
-window.updateShortlistUI      = updateShortlistUI;
 window.renderPulsePanel       = renderPulsePanel;
-window._shortlist             = _shortlist;
+
+// ── Address / Town search (Bug 9) ──────────────────────────────────────────
+let _searchIdx = -1; // keyboard cursor index
+
+function buildSearchIndex() {
+  if (window._searchCache) return window._searchCache;
+  const results = [];
+  // Towns first
+  if (DB.towns) {
+    DB.towns.forEach(id => {
+      const s = DB.town_summaries[id];
+      if (!s) return;
+      results.push({ type: "town", id, name: s.name, sub: s.region || "", search: s.name.toLowerCase() });
+    });
+  }
+  // Blocks
+  if (DB.blocks) {
+    DB.blocks.forEach(b => {
+      const addr = `Blk ${b.block} ${b.street}`;
+      const townName = DB.town_summaries[b.town]?.name || b.town;
+      results.push({ type: "block", block: b, name: addr, sub: townName, search: addr.toLowerCase() });
+    });
+  }
+  window._searchCache = results;
+  return results;
+}
+
+window.fbSearchInput = function(q) {
+  const dropdown = document.getElementById("fbSearchDropdown");
+  if (!dropdown) return;
+  const val = q.trim().toLowerCase();
+  if (val.length < 2) { dropdown.style.display = "none"; _searchIdx = -1; return; }
+  const index = buildSearchIndex();
+  const matches = [];
+  // Towns first (exact prefix or contains)
+  index.filter(r => r.type === "town" && r.search.includes(val)).slice(0, 3).forEach(r => matches.push(r));
+  // Blocks
+  index.filter(r => r.type === "block" && r.search.includes(val)).slice(0, 5).forEach(r => matches.push(r));
+  const total = matches.slice(0, 8);
+  if (!total.length) { dropdown.style.display = "none"; _searchIdx = -1; return; }
+  dropdown.innerHTML = total.map((r, i) => {
+    const icon = r.type === "town"
+      ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6z"/></svg>`
+      : `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6M9 17h4"/></svg>`;
+    return `<div class="fb-search-item" data-idx="${i}" onclick="fbSearchSelect(${i})">
+      <span class="fb-search-item-icon">${icon}</span>
+      <span class="fb-search-item-main">
+        <div class="fb-search-item-name">${r.name}</div>
+        <div class="fb-search-item-sub">${r.sub}</div>
+      </span>
+    </div>`;
+  }).join("");
+  dropdown._matches = total;
+  dropdown.style.display = "block";
+  _searchIdx = -1;
+};
+
+window.fbSearchKeydown = function(e) {
+  const dropdown = document.getElementById("fbSearchDropdown");
+  if (!dropdown || dropdown.style.display === "none") return;
+  const items = dropdown.querySelectorAll(".fb-search-item");
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    _searchIdx = Math.min(_searchIdx + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle("active", i === _searchIdx));
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    _searchIdx = Math.max(_searchIdx - 1, 0);
+    items.forEach((el, i) => el.classList.toggle("active", i === _searchIdx));
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (_searchIdx >= 0) fbSearchSelect(_searchIdx);
+  } else if (e.key === "Escape") {
+    dropdown.style.display = "none";
+    document.getElementById("fbSearchInput").value = "";
+    _searchIdx = -1;
+  }
+};
+
+window.fbSearchSelect = function(idx) {
+  const dropdown = document.getElementById("fbSearchDropdown");
+  if (!dropdown?._matches) return;
+  const r = dropdown._matches[idx];
+  if (!r) return;
+  dropdown.style.display = "none";
+  document.getElementById("fbSearchInput").value = "";
+  _searchIdx = -1;
+  showView("map");
+  if (r.type === "town") {
+    const s = DB.town_summaries[r.id];
+    if (s?.coords) MAP.flyTo(s.coords, 15, { duration: 1.2 });
+    if (s) renderTownDrawer(s, r.id);
+  } else if (r.type === "block") {
+    const b = r.block;
+    if (b.coords) {
+      MAP.flyTo(b.coords, 18, { duration: 1.2 });
+      setTimeout(() => {
+        const latlng = L.latLng(b.coords[0], b.coords[1]);
+        showBlockPopup(null, b, DB.town_summaries[b.town], latlng);
+      }, 1300);
+    }
+  }
+};
+
+// Close dropdown when clicking outside
+document.addEventListener("click", e => {
+  const group = document.getElementById("fbSearchGroup");
+  if (group && !group.contains(e.target)) {
+    const dd = document.getElementById("fbSearchDropdown");
+    if (dd) dd.style.display = "none";
+  }
+});
 
 document.addEventListener("DOMContentLoaded", () => {
   // Nav tabs

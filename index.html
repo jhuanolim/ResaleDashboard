@@ -186,11 +186,6 @@
     </button>
   </div>
   <div class="topnav-right">
-    <button class="shortlist-pill" id="shortlistPillBtn" onclick="toggleShortlistDrawer()">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-      Shortlist
-      <span class="shortlist-count" id="shortlistCount" style="display:none">0</span>
-    </button>
     <div class="data-badge" id="dataBadge">
       <span class="data-badge-dot"></span> Loading…
     </div>
@@ -205,17 +200,25 @@
 
     <!-- Horizontal filter bar (desktop) -->
     <div class="filter-bar" id="filterBar">
-      <!-- Budget -->
-      <div class="fb-group">
+      <!-- Address / town search -->
+      <div class="fb-group" id="fbSearchGroup" style="position:relative">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--ink-3)" stroke-width="2" style="flex-shrink:0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="fbSearchInput" class="fb-search-input" type="text" placeholder="Search town or block…" autocomplete="off" oninput="fbSearchInput(this.value)" onkeydown="fbSearchKeydown(event)">
+        <div id="fbSearchDropdown" class="fb-search-dropdown" style="display:none"></div>
+      </div>
+      <div class="fb-divider"></div>
+      <!-- Budget preset chips (Bug 6) -->
+      <div class="fb-group" id="budgetChipGroup">
         <span class="fb-label">Budget</span>
-        <div class="budget-wrap">
-          <span class="budget-prefix">$</span>
-          <input class="budget-input" id="budgetMin" placeholder="Min" type="text" inputmode="numeric" autocomplete="off" />
-        </div>
-        <span class="budget-sep">–</span>
-        <div class="budget-wrap">
-          <span class="budget-prefix">$</span>
-          <input class="budget-input" id="budgetMax" placeholder="Max" type="text" inputmode="numeric" autocomplete="off" />
+        <div class="fb-year-chips" id="budgetChips">
+          <button class="fb-year-chip" onclick="setBudgetChip(this,0,400)">Under $400k</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,400,500)">$400–500k</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,500,600)">$500–600k</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,600,700)">$600–700k</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,700,800)">$700–800k</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,800,900)">$800–900k</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,900,1000)">$900k–$1M</button>
+          <button class="fb-year-chip" onclick="setBudgetChip(this,1000,9999)">Above $1M</button>
         </div>
       </div>
       <div class="fb-divider"></div>
@@ -422,23 +425,6 @@
   </div><!-- /trends view -->
 
 </main>
-
-<!-- ── Shortlist drawer ─────────────────────────────────────────────────── -->
-<div class="shortlist-backdrop" id="shortlistBackdrop" onclick="toggleShortlistDrawer()"></div>
-<div class="shortlist-drawer" id="shortlistDrawer">
-  <div class="shortlist-drawer-head">
-    <span class="shortlist-drawer-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-      Shortlist
-    </span>
-    <button class="shortlist-drawer-close" onclick="toggleShortlistDrawer()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-  </div>
-  <div class="shortlist-drawer-body" id="shortlistDrawerBody">
-    <!-- Populated by JS -->
-  </div>
-</div>
 
 <script src="app.js"></script>
 </body>
