@@ -190,15 +190,12 @@ function updateShortlistUI() {
 
 function renderShortlistDrawer() {
   const body = document.getElementById("shortlistDrawerBody");
-  const footer = document.getElementById("shortlistDrawerFooter");
   if (!body) return;
   const ids = _shortlist.toArray();
   if (ids.length === 0) {
     body.innerHTML = `<div class="shortlist-empty"><div class="shortlist-empty-icon">★</div>Star towns on the map to save them here</div>`;
-    if (footer) footer.style.display = "none";
     return;
   }
-  if (footer) footer.style.display = "";
   const rows = ids.map(id => {
     const s = DB?.town_summaries?.[id];
     const color = s ? tierColor(s.median) : "#6e6b63";
@@ -221,13 +218,6 @@ window.toggleShortlistDrawer = function() {
   if (isOpen) renderShortlistDrawer();
 };
 
-window.shortlistToCompare = function() {
-  const ids = _shortlist.toArray().slice(0, 3);
-  state.compareSlots = ids;
-  compareState.mode = "town";
-  window.toggleShortlistDrawer();
-  showView("compare");
-};
 
 /* ══════════════════════════════════════════════════════════════════════════
    FILTER BAR (horizontal, desktop)
@@ -456,7 +446,6 @@ const fmtMonth = m => {
 /* ── SVG Icons ──────────────────────────────────────────────────────────── */
 const Icons = {
   map:     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4l-6 2v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/></svg>`,
-  compare: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M8 7L4 11l4 4"/><path d="M16 17l4-4-4-4"/></svg>`,
   trends:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 6 4-4"/></svg>`,
   filter:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18M6 12h12M10 19h4"/></svg>`,
   back:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>`,
@@ -998,7 +987,7 @@ let DB = null;   // full data from resale_data.json
 let MAP = null;  // Leaflet map instance
 
 const state = {
-  view: "map",           // map | town | compare | trends
+  view: "map",           // map | town | trends
   filters: {
     types:    [],
     minPrice: 0,
@@ -1013,7 +1002,6 @@ const state = {
   activeTown: null,
   drawerOpen: false,
   sidebarOpen: true,
-  compareSlots: [],      // up to 3 town ids
   modalOpen: false,
   modalSlotIdx: null,
   townMarkers: {},
@@ -1081,7 +1069,6 @@ function showView(viewId) {
     el.classList.toggle("active", el.dataset.view === viewId);
   });
   if (viewId === "map" && MAP) setTimeout(() => MAP.invalidateSize(), 50);
-  if (viewId === "compare") renderCompare();
   if (viewId === "trends") renderTrends();
 }
 
@@ -1702,10 +1689,6 @@ function showBlockPopup(marker, block, town, latlng) {
         <svg width="11" height="11" viewBox="0 0 24 24" fill="${isStarred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         <span class="bp-star-lbl">${isStarred ? 'Shortlisted' : 'Shortlist'}</span>
       </button>
-      <button class="bp-action-btn" onclick="bpAddToCompare('${blockKey}');MAP.closePopup()">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
-        Compare
-      </button>
     </div>
   </div>`;
   L.popup({ className: "block-popup", closeButton: true, maxWidth: 260 })
@@ -1721,15 +1704,6 @@ window.bpToggleShortlist = function(blockKey, btn) {
   if (lbl) lbl.textContent = starred ? "Shortlisted" : "Shortlist";
 };
 
-window.bpAddToCompare = function(blockKey) {
-  compareState.mode = "block";
-  const emptyIdx = state.compareSlots.findIndex(s => !s);
-  if (emptyIdx >= 0) state.compareSlots[emptyIdx] = blockKey;
-  else if (state.compareSlots.length < 3) state.compareSlots.push(blockKey);
-  else state.compareSlots[2] = blockKey; // replace last slot if all full
-  renderCompare();
-  showView("compare");
-};
 
 /* ── Town drawer ─────────────────────────────────────────────────────────── */
 function openTownDrawer(townId) {
@@ -1867,10 +1841,6 @@ function renderTownDrawer(s, townId) {
         <svg width="12" height="12" viewBox="0 0 24 24" fill="${isStarred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         <span class="btn-lbl">${isStarred ? 'Shortlisted' : 'Shortlist'}</span>
       </button>
-      <button class="btn-secondary" onclick="drawerAddToCompare('${townId}')">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
-        <span>Compare</span>
-      </button>
       <button class="drawer-open-btn" onclick="openTownDashboard('${townId}')">
         Open ${Icons.back.replace('stroke-linecap="round" stroke-linejoin="round">', 'stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(180deg)">')}
       </button>
@@ -1887,15 +1857,6 @@ window.drawerToggleShortlist = function(townId, btn) {
   if (lbl) lbl.textContent = starred ? "Shortlisted" : "Shortlist";
 };
 
-window.drawerAddToCompare = function(townId) {
-  compareState.mode = "town";
-  const emptyIdx = state.compareSlots.findIndex(s => !s);
-  if (emptyIdx >= 0) state.compareSlots[emptyIdx] = townId;
-  else if (state.compareSlots.length < 3) state.compareSlots.push(townId);
-  else state.compareSlots[2] = townId;
-  renderCompare();
-  showView("compare");
-};
 
 /* ══════════════════════════════════════════════════════════════════════════
    TOWN FULL DASHBOARD
@@ -2736,11 +2697,8 @@ function renderTownDashboard(townId) {
   });
 }
 /* ══════════════════════════════════════════════════════════════════════════
-   COMPARE VIEW
+   TOWN DASHBOARD STATE
    ══════════════════════════════════════════════════════════════════════════ */
-const COMPARE_COLORS = ["#e07b4f", "#5ec896", "#b48ee0"];
-
-const compareState   = { mode: "town" }; // "town" | "block"
 const townDashState  = {
   period: "all",   // "1y"|"3y"|"5y"|"all"
   townId: null,
@@ -2752,413 +2710,6 @@ const townDashState  = {
   _txnShown: 20,   // how many txn rows shown
 };
 
-function renderCompare() {
-  renderCompareHead();
-  renderCompareGrid();
-}
-
-function setCompareMode(m) {
-  compareState.mode = m;
-  // Clear slots that don't match the new mode
-  if (m === "town") state.compareSlots = state.compareSlots.filter(id => DB.town_summaries[id]);
-  else state.compareSlots = state.compareSlots.filter(id => id.includes("|"));
-  renderCompare();
-}
-
-function renderCompareSlots() { renderCompareHead(); } // compat shim
-
-function renderCompareHead() {
-  const container = document.getElementById("compareSlots");
-  if (!container) return;
-  const header = document.getElementById("compareHeader");
-  if (header) {
-    header.className = "compare-head";
-    header.innerHTML = `
-      <div class="compare-head-titlerow">
-        <h2 class="compare-head-title">Side-by-side</h2>
-        <span class="compare-head-sub">Add up to 3 ${compareState.mode === "town" ? "towns" : "blocks"}</span>
-      </div>
-      <div class="compare-mode-tabs">
-        <button class="compare-mode-tab${compareState.mode==="town"?" active":""}" onclick="setCompareMode('town')">Compare towns</button>
-        <button class="compare-mode-tab${compareState.mode==="block"?" active":""}" onclick="setCompareMode('block')">Compare blocks</button>
-      </div>`;
-  }
-
-  const slots = [0, 1, 2].map(i => {
-    const id = state.compareSlots[i];
-    if (id) {
-      const c = COMPARE_COLORS[i];
-      let name, meta;
-      if (compareState.mode === "town") {
-        const s = DB.town_summaries[id];
-        name = s?.name || id;
-        meta = s?.region || "";
-      } else {
-        const parts = id.split("|");
-        name = `Blk ${parts[1]}`;
-        meta = parts[2] || "";
-      }
-      return `<div class="compare-slot filled" style="border-color:${c}">
-        <span class="compare-slot-color" style="background:${c}"></span>
-        <div>
-          <div class="compare-slot-name">${name}</div>
-          <div class="compare-slot-meta">${meta}</div>
-        </div>
-        <button class="compare-slot-remove" onclick="removeCompareSlot(${i})">${Icons.close}</button>
-      </div>`;
-    }
-    return `<div class="compare-slot" onclick="openComparePicker(${i})">
-      ${Icons.plus} <span>Add ${compareState.mode}</span>
-    </div>`;
-  });
-  container.innerHTML = slots.join("");
-}
-
-function removeCompareSlot(i) {
-  state.compareSlots.splice(i, 1);
-  renderCompare();
-}
-
-function buildCompareTrendChart(W = 900) {
-  const slots = state.compareSlots;
-  const H = Math.round(W * (200 / 900));
-  const pad = { t: 14, b: 28, l: 52, r: Math.min(120, Math.round(W * 0.14)) };
-  const chartW = W - pad.l - pad.r;
-  const chartH = H - pad.t - pad.b;
-
-  // Collect all timelines and find shared range
-  const tls = slots.map(id => DB.town_timelines[id] || []);
-  const allMonths = [...new Set(tls.flatMap(tl => tl.map(d => d.m)))].sort();
-  if (allMonths.length < 2) return "";
-
-  const allVals = tls.flatMap(tl => tl.map(d => d.med).filter(Boolean));
-  const minV = Math.min(...allVals) * 0.97;
-  const maxV = Math.max(...allVals) * 1.03;
-
-  const px = i  => pad.l + (i / (allMonths.length - 1)) * chartW;
-  const py = v  => pad.t + (1 - (v - minV) / (maxV - minV)) * chartH;
-
-  // Grid + Y axis
-  const yTicks = Array.from({length: 4}, (_, i) => {
-    const v = minV + (maxV - minV) * (i / 3);
-    const y = py(v);
-    return `<line x1="${pad.l}" y1="${y.toFixed(1)}" x2="${W - pad.r}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
-            <text x="${pad.l - 6}" y="${(y + 4).toFixed(1)}" font-size="9" fill="var(--ink-3)" text-anchor="end" font-family="Inter,sans-serif">$${Math.round(v)}k</text>`;
-  }).join("");
-
-  const seenYrs = new Set();
-  const xLabels = allMonths.map((m, i) => {
-    const yr = m.slice(0, 4);
-    if (i % 12 !== 0 || seenYrs.has(yr)) return "";
-    seenYrs.add(yr);
-    return `<text x="${px(i).toFixed(1)}" y="${H}" font-size="9" fill="var(--ink-3)" text-anchor="middle" font-family="Inter,sans-serif">${yr}</text>`;
-  }).join("");
-
-  // One line per town with collision-avoided labels
-  const LINE_H = 13;
-  const entries = slots.map((id, ci) => {
-    const tl = tls[ci];
-    const c = COMPARE_COLORS[ci];
-    const pts = allMonths.map((m, i) => {
-      const d = tl.find(x => x.m === m);
-      return d?.med != null ? [px(i), py(d.med)] : null;
-    }).filter(Boolean);
-    if (pts.length < 2) return null;
-    let path = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
-    for (let i = 1; i < pts.length; i++) {
-      const cpx = (pts[i-1][0] + pts[i][0]) / 2;
-      path += ` C${cpx.toFixed(1)},${pts[i-1][1].toFixed(1)} ${cpx.toFixed(1)},${pts[i][1].toFixed(1)} ${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)}`;
-    }
-    const last = pts[pts.length - 1];
-    return { id, c, path, dotY: last[1], lblY: last[1], lastX: last[0] };
-  }).filter(Boolean);
-
-  entries.sort((a, b) => a.dotY - b.dotY);
-  for (let i = 1; i < entries.length; i++)
-    if (entries[i].lblY - entries[i-1].lblY < LINE_H) entries[i].lblY = entries[i-1].lblY + LINE_H;
-  for (let i = entries.length - 1; i >= 0; i--)
-    if (entries[i].lblY > H - pad.b - 2) entries[i].lblY = H - pad.b - 2;
-  for (let i = entries.length - 2; i >= 0; i--)
-    if (entries[i+1].lblY - entries[i].lblY < LINE_H) entries[i].lblY = entries[i+1].lblY - LINE_H;
-
-  const labelX = W - pad.r + 8;
-  const lines = entries.map(({ id, c, path, dotY, lblY, lastX }) => {
-    const name = DB.town_summaries[id]?.name || id;
-    const leader = Math.abs(lblY - dotY) > 3
-      ? `<line x1="${lastX.toFixed(1)}" y1="${dotY.toFixed(1)}" x2="${labelX}" y2="${(lblY+1).toFixed(1)}" stroke="${c}" stroke-width="1" opacity="0.35" stroke-dasharray="2 2"/>`
-      : "";
-    return `<path d="${path}" fill="none" stroke="${c}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>
-            <circle cx="${lastX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="3.5" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/>
-            ${leader}
-            <text x="${labelX}" y="${(lblY+4).toFixed(1)}" font-size="10" fill="${c}" font-family="Inter,sans-serif" font-weight="700">${name}</text>`;
-  }).join("");
-
-  return `<svg width="100%" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
-    ${yTicks}${xLabels}${lines}
-  </svg>`;
-}
-
-function renderCompareColumns() { renderCompareGrid(); } // compat shim
-
-function renderCompareGrid() {
-  const body = document.getElementById("compareBody");
-  if (!body) return;
-  if (state.compareSlots.length === 0) {
-    body.innerHTML = `<div class="compare-empty">
-      <div class="compare-empty-icon">⇄</div>
-      <div>Pick at least one ${compareState.mode} to start comparing.</div>
-      <button class="btn-primary" style="margin-top:18px" onclick="openComparePicker(0)">Add a ${compareState.mode}</button>
-    </div>`;
-    return;
-  }
-
-  const slots = state.compareSlots;
-  const n = slots.length;
-  const colsCls = n === 2 ? "cols-2" : "cols-3";
-
-  // Build items
-  const items = slots.map((id, i) => {
-    if (compareState.mode === "town") {
-      return { id, type: "town", data: DB.town_summaries[id], color: COMPARE_COLORS[i] };
-    } else {
-      const parts = id.split("|");
-      const b = (DB.blocks || []).find(b => b.town === parts[0] && b.block === parts[1] && b.street === parts[2]);
-      return { id, type: "block", data: b, color: COMPARE_COLORS[i] };
-    }
-  }).filter(it => it.data);
-
-  if (items.length === 0) {
-    body.innerHTML = `<div class="compare-empty"><div class="compare-empty-icon">⇄</div><div>No valid data for selected items.</div></div>`;
-    return;
-  }
-
-  // Winner detection: returns Set of indices that win
-  function winners(getFn, higherIsBetter = true) {
-    if (items.length < 2) return new Set();
-    const vals = items.map(getFn);
-    const best = higherIsBetter ? Math.max(...vals.filter(v => v != null)) : Math.min(...vals.filter(v => v != null));
-    const ws = new Set();
-    items.forEach((it, i) => { if (getFn(it) === best) ws.add(i); });
-    return ws;
-  }
-
-  function compareRow(label, sub, fmtFn, ws, winLabel) {
-    const cells = items.map((it, i) => {
-      const isWin = ws && ws.has(i);
-      return `<div class="compare-cell${isWin ? " compare-cell-win" : ""}">
-        <div class="compare-cell-val">${fmtFn(it)}</div>
-        ${isWin && winLabel ? `<div class="compare-cell-sub">${winLabel}</div>` : ""}
-      </div>`;
-    }).join("");
-    return `<div class="compare-row ${colsCls}">
-      <div class="compare-cell compare-cell-label">${label}${sub ? `<div class="helper">${sub}</div>` : ""}</div>
-      ${cells}
-    </div>`;
-  }
-
-  // Header row
-  const headerCells = items.map(it => {
-    const name = it.type === "town" ? it.data.name : `Blk ${it.data.block}`;
-    const meta = it.type === "town" ? it.data.region : `${it.data.street} · ${DB.town_summaries[it.data.town]?.name || ""}`;
-    return `<div class="compare-cell compare-header-cell" style="border-top-color:${it.color}">
-      <div class="compare-header-name">${name}</div>
-      <div class="compare-header-meta">${meta}</div>
-    </div>`;
-  }).join("");
-
-  let rows = "";
-  if (compareState.mode === "town") {
-    rows = [
-      compareRow("Median price", "Last 3 months",
-        it => fmtKs(it.data.median),
-        winners(it => -it.data.median, true), "cheapest"),
-      compareRow("YoY change", "vs same period last year",
-        it => deltaPill(it.data.dpct || 0),
-        winners(it => it.data.dpct || 0, true)),
-      compareRow("$ / sqm", "Last 3 months median",
-        it => `$${(it.data.ppsqm||0).toLocaleString()}`,
-        winners(it => -(it.data.ppsqm||9999), true), "best value"),
-      compareRow("12-mo volume", "Trades in past year",
-        it => (it.data.vol_12m||it.data.vol||0).toLocaleString(),
-        winners(it => it.data.vol_12m||it.data.vol||0, true), "most liquid"),
-      compareRow("Median lease", "Years remaining",
-        it => it.data.med_lease ? `${it.data.med_lease} years` : "—",
-        winners(it => it.data.med_lease||0, true), "freshest"),
-      compareRow("Lease <60y", "% of recent sales with short lease",
-        it => `${it.data.low_lease_pct||0}%`,
-        winners(it => -(it.data.low_lease_pct||0), true)),
-      compareRow("3-room median", null,
-        it => it.data.type_medians?.["3 ROOM"] ? fmtKs(it.data.type_medians["3 ROOM"]) : "—",
-        winners(it => -(it.data.type_medians?.["3 ROOM"]||9999), true)),
-      compareRow("4-room median", null,
-        it => it.data.type_medians?.["4 ROOM"] ? fmtKs(it.data.type_medians["4 ROOM"]) : "—",
-        winners(it => -(it.data.type_medians?.["4 ROOM"]||9999), true)),
-      compareRow("5-room median", null,
-        it => it.data.type_medians?.["5 ROOM"] ? fmtKs(it.data.type_medians["5 ROOM"]) : "—",
-        winners(it => -(it.data.type_medians?.["5 ROOM"]||9999), true)),
-      compareRow("MRT stations", null,
-        it => (AMENITIES[it.id]?.mrt||[]).length,
-        winners(it => (AMENITIES[it.id]?.mrt||[]).length, true)),
-      compareRow("Schools", null,
-        it => (AMENITIES[it.id]?.schools||[]).length,
-        winners(it => (AMENITIES[it.id]?.schools||[]).length, true)),
-      compareRow("Hawker centres", null,
-        it => (AMENITIES[it.id]?.hawker||[]).length,
-        winners(it => (AMENITIES[it.id]?.hawker||[]).length, true)),
-      compareRow("", null,
-        it => `<button class="btn-secondary" style="height:32px;font-size:12px" onclick="openTownDashboard('${it.id}')">Open dashboard</button>`,
-        null),
-    ].join("");
-  } else {
-    rows = [
-      compareRow("Median price", "All flat types",
-        it => it.data.med ? fmtKs(it.data.med) : "—",
-        winners(it => -(it.data.med||9999), true), "cheapest"),
-      compareRow("Transactions", "All time on record",
-        it => (it.data.vol||0).toLocaleString(),
-        winners(it => it.data.vol||0, true)),
-      compareRow("Lease commenced", "Year built",
-        it => it.data.lcd || "—",
-        winners(it => it.data.lcd||0, true), "newest"),
-      compareRow("3-room median", null,
-        it => it.data.types?.["3 ROOM"] ? fmtKs(it.data.types["3 ROOM"]) : "—",
-        winners(it => -(it.data.types?.["3 ROOM"]||9999), true)),
-      compareRow("4-room median", null,
-        it => it.data.types?.["4 ROOM"] ? fmtKs(it.data.types["4 ROOM"]) : "—",
-        winners(it => -(it.data.types?.["4 ROOM"]||9999), true)),
-      compareRow("5-room median", null,
-        it => it.data.types?.["5 ROOM"] ? fmtKs(it.data.types["5 ROOM"]) : "—",
-        winners(it => -(it.data.types?.["5 ROOM"]||9999), true)),
-      compareRow("Executive median", null,
-        it => it.data.types?.["EXECUTIVE"] ? fmtKs(it.data.types["EXECUTIVE"]) : "—",
-        winners(it => -(it.data.types?.["EXECUTIVE"]||9999), true)),
-      compareRow("", null,
-        it => `<button class="btn-secondary" style="height:32px;font-size:12px" onclick="openTownDashboard('${it.data.town}')">Open town</button>`,
-        null),
-    ].join("");
-  }
-
-  body.innerHTML = `<div class="compare-grid">
-    <div class="compare-row ${colsCls}">
-      <div class="compare-cell compare-cell-label">${compareState.mode === "town" ? "Town" : "Block"}</div>
-      ${headerCells}
-    </div>
-    ${rows}
-  </div>
-
-  <!-- Price Trend chart (towns only) -->
-  ${compareState.mode === "town" && slots.length > 0 ? `
-  <div class="td-section-divider" style="margin-bottom:14px">
-    <div class="td-section-divider-line"></div>
-    <div class="td-section-divider-label">Price History</div>
-    <div class="td-section-divider-line"></div>
-  </div>
-  <div class="td-card-hero trends-col-12" style="grid-column:1/-1">
-    <div class="td-card-title">Median resale price · all-time</div>
-    <div class="td-spark-wrap" id="compareChartWrap">${buildCompareTrendChart()}</div>
-  </div>` : ""}`;
-
-  // Resize observer for compare chart
-  requestAnimationFrame(() => {
-    const cmpWrap = document.getElementById("compareChartWrap");
-    if (!cmpWrap) return;
-    if (cmpWrap.clientWidth > 10) cmpWrap.innerHTML = buildCompareTrendChart(cmpWrap.clientWidth);
-    if (cmpWrap._resizeObs) cmpWrap._resizeObs.disconnect();
-    let lastCmpW = 0;
-    cmpWrap._resizeObs = new ResizeObserver(entries => {
-      const w = Math.floor(entries[0].contentRect.width);
-      if (w < 10 || w === lastCmpW) return;
-      lastCmpW = w;
-      cmpWrap.innerHTML = buildCompareTrendChart(w);
-    });
-    cmpWrap._resizeObs.observe(cmpWrap);
-  });
-}
-
-/* ── Town / block picker modal ───────────────────────────────────────────── */
-function openComparePicker(slotIdx) {
-  state.modalSlotIdx = slotIdx;
-  compareState._pickerMode = compareState.mode;
-  openTownPicker(slotIdx);
-}
-
-
-/* ── Town picker modal ───────────────────────────────────────────────────── */
-function openTownPicker(slotIdx) {
-  state.modalSlotIdx = slotIdx;
-  state.modalOpen    = true;
-  const mode = compareState._pickerMode || compareState.mode || "town";
-  const title = document.getElementById("modalTitle");
-  if (title) title.textContent = mode === "block" ? "Choose a block" : "Choose a town";
-  const searchEl = document.getElementById("modalSearch");
-  if (searchEl) searchEl.placeholder = mode === "block" ? "Search blocks, streets…" : "Search towns…";
-  document.getElementById("modalOverlay").classList.add("open");
-  document.getElementById("modalSearch").value = "";
-  renderModalList("");
-  setTimeout(() => document.getElementById("modalSearch").focus(), 100);
-}
-
-function closeTownPicker() {
-  state.modalOpen = false;
-  document.getElementById("modalOverlay").classList.remove("open");
-}
-
-function renderModalList(q) {
-  const list = document.getElementById("modalTownList");
-  const excluded = state.compareSlots;
-  const mode = compareState._pickerMode || compareState.mode || "town";
-
-  if (mode === "block") {
-    const lq = q.toLowerCase();
-    const blocks = (DB.blocks || [])
-      .filter(b => b.vol >= 3)
-      .filter(b => {
-        const key = `${b.town}|${b.block}|${b.street}`;
-        return !excluded.includes(key);
-      })
-      .filter(b => !q ||
-        b.block.toLowerCase().includes(lq) ||
-        b.street.toLowerCase().includes(lq) ||
-        b.town.toLowerCase().includes(lq))
-      .slice(0, 80);
-    list.innerHTML = blocks.map(b => {
-      const key = `${b.town}|${b.block}|${b.street}`;
-      const townName = DB.town_summaries[b.town]?.name || b.town;
-      return `<div class="modal-town-item" onclick="selectCompareTown('${key.replace(/'/g,"\\'")}')">
-        <div>
-          <div class="modal-town-name">Blk ${b.block}, ${b.street}</div>
-          <div class="modal-town-region">${townName}</div>
-        </div>
-        <span class="tag region">${fmtKs(b.med)}</span>
-        <span style="font-size:11px;color:var(--ink-3)">${b.vol} txns</span>
-      </div>`;
-    }).join("") || `<div class="empty-state">No blocks found</div>`;
-    return;
-  }
-
-  const towns = DB.towns
-    .filter(id => !excluded.includes(id))
-    .filter(id => !q || DB.town_summaries[id]?.name.toLowerCase().includes(q.toLowerCase()));
-  list.innerHTML = towns.map(id => {
-    const s = DB.town_summaries[id];
-    return `<div class="modal-town-item" onclick="selectCompareTown('${id}')">
-      <div>
-        <div class="modal-town-name">${s.name}</div>
-        <div class="modal-town-region">${s.region}</div>
-      </div>
-      <span class="tag region">${fmtKs(s.median)}</span>
-      <span class="delta-pill ${s.dpct > 0 ? 'up' : 'down'}">${fmtPct(s.dpct)}</span>
-    </div>`;
-  }).join("") || `<div class="empty-state">No towns found</div>`;
-}
-
-function selectCompareTown(id) {
-  const idx = state.modalSlotIdx;
-  if (idx >= state.compareSlots.length) state.compareSlots.push(id);
-  else state.compareSlots[idx] = id;
-  closeTownPicker();
-  renderCompare();
-}
 
 /* ══════════════════════════════════════════════════════════════════════════
    TRENDS VIEW
@@ -3178,6 +2729,8 @@ function getTrendsNatTL() {
 }
 
 function getTrendsTownTL(id) {
+  const lcdTl = getLcdTownTL(id);
+  if (lcdTl) return lcdTl;
   const ft = trendsState.flatType;
   if (ft === "ALL") return DB.town_timelines[id] || [];
   return ((DB.town_type_timelines || {})[id] || {})[ft] || [];
@@ -3208,6 +2761,38 @@ function getLcdBandTimeline() {
   for (const [, entry] of activeBands) {
     // entry is either a timeline array (all-type) or {flatType: timeline} (per-type)
     const tl = useFtBands ? (entry[flatType] || []) : entry;
+    for (const d of tl) {
+      if (d.med == null || !d.vol) continue;
+      if (!byMonth[d.m]) byMonth[d.m] = { sumWtMed: 0, sumVol: 0 };
+      byMonth[d.m].sumWtMed += d.med * d.vol;
+      byMonth[d.m].sumVol   += d.vol;
+    }
+  }
+  return (DB.months || []).map(m => {
+    const e = byMonth[m];
+    if (!e || !e.sumVol) return { m, med: null, vol: 0 };
+    return { m, med: Math.round(e.sumWtMed / e.sumVol * 10) / 10, vol: e.sumVol };
+  });
+}
+
+// Same as getLcdBandTimeline but for a specific town using town_lcd_band_timelines.
+// Returns null when LCD filter is inactive.
+function getLcdTownTL(townId) {
+  const { lcdMin, lcdMax } = trendsState;
+  if (lcdMin == null && lcdMax == null) return null;
+  const lo = lcdMin ?? 1960, hi = lcdMax ?? 2025;
+
+  const bands = DB.town_lcd_band_timelines?.[townId];
+  if (!bands) return null;
+
+  const activeBands = Object.entries(bands).filter(([k]) => {
+    const bs = parseInt(k);
+    return (bs + 4) >= lo && bs <= hi;
+  });
+  if (!activeBands.length) return null;
+
+  const byMonth = {};
+  for (const [, tl] of activeBands) {
     for (const d of tl) {
       if (d.med == null || !d.vol) continue;
       if (!byMonth[d.m]) byMonth[d.m] = { sumWtMed: 0, sumVol: 0 };
@@ -3508,8 +3093,8 @@ function renderTrends() {
   let headEl = trendsView?.querySelector(".trends-head");
   if (headEl) {
     headEl.innerHTML = `<div style="display:flex;align-items:baseline;gap:14px">
-      <h2 class="compare-head-title">Trends</h2>
-      <span class="compare-head-sub">National market, ${fmtMonth(first.m)} — ${fmtMonth(latest.m)}</span>
+      <h2 class="trends-page-title">Trends</h2>
+      <span class="trends-page-sub">National market, ${fmtMonth(first.m)} — ${fmtMonth(latest.m)}</span>
     </div>`;
   }
 
@@ -4167,12 +3752,6 @@ window.toggleType             = toggleType;
 window.openTownDrawer         = openTownDrawer;
 window.closeTownDrawer        = closeTownDrawer;
 window.openTownDashboard      = openTownDashboard;
-window.openTownPicker         = openTownPicker;
-window.closeTownPicker        = closeTownPicker;
-window.selectCompareTown      = selectCompareTown;
-window.removeCompareSlot      = removeCompareSlot;
-window.setCompareMode         = setCompareMode;
-window.openComparePicker      = openComparePicker;
 window.resetFilters           = window.clearFilters;
 window.updateShortlistUI      = updateShortlistUI;
 window.renderPulsePanel       = renderPulsePanel;
@@ -4234,13 +3813,6 @@ document.addEventListener("DOMContentLoaded", () => {
     state.tileLayer.bringToBack();
   });
 
-  // Modal search
-  document.getElementById("modalSearch").addEventListener("input", e => {
-    renderModalList(e.target.value);
-  });
-  document.getElementById("modalOverlay").addEventListener("click", e => {
-    if (e.target === e.currentTarget) closeTownPicker();
-  });
 
   // Price sliders
   document.getElementById("priceRangeMin").addEventListener("input", e => window.onPriceMinChange(e.target.value));

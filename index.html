@@ -97,12 +97,8 @@
     .trend-chart { width: 100%; min-height: 140px; }
     .txn-table-wrap { overflow-x: auto; }
 
-    /* ── Compare view layout ──────────────────────── */
-    [data-view="compare"].view.active { flex-direction: column; background: var(--bg); overflow: hidden; }
-    .compare-header { flex: 0 0 auto; padding: 20px 24px; border-bottom: 1px solid var(--line); background: var(--bg-1); }
     .section-title { font-size: 18px; font-weight: 700; color: var(--ink); margin-bottom: 4px; }
     .section-sub { font-size: 13px; color: var(--ink-3); margin-bottom: 14px; }
-    .compare-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 24px; }
 
     /* ── Trends view layout ───────────────────────── */
     [data-view="trends"].view.active { flex-direction: column; background: var(--bg); overflow: hidden; }
@@ -183,10 +179,6 @@
     <button class="topnav-tab active" data-view="map">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3V6z"/></svg>
       Map
-    </button>
-    <button class="topnav-tab" data-view="compare">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
-      Compare
     </button>
     <button class="topnav-tab" data-view="trends">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
@@ -416,36 +408,12 @@
     </div>
   </div><!-- /town view -->
 
-  <!-- ══════════ COMPARE VIEW ══════════ -->
-  <div class="view" data-view="compare">
-    <div id="compareHeader" class="compare-head">
-      <!-- Populated by renderCompareHead() -->
-      <div class="compare-head-titlerow">
-        <h2 class="compare-head-title">Side-by-side</h2>
-        <span class="compare-head-sub">Add up to 3 towns or blocks</span>
-      </div>
-      <div class="compare-mode-tabs">
-        <button class="compare-mode-tab active" onclick="setCompareMode('town')">Compare towns</button>
-        <button class="compare-mode-tab" onclick="setCompareMode('block')">Compare blocks</button>
-      </div>
-      <div class="compare-slots" id="compareSlots">
-        <!-- Populated by JS -->
-      </div>
-    </div>
-    <div class="compare-body" id="compareBody">
-      <div class="compare-empty">
-        <div class="compare-empty-icon">⇄</div>
-        <div>Pick at least one town to start comparing.</div>
-      </div>
-    </div>
-  </div><!-- /compare view -->
-
   <!-- ══════════ TRENDS VIEW ══════════ -->
   <div class="view" data-view="trends">
     <div class="trends-head" id="trendsHead">
       <div style="display:flex;align-items:baseline;gap:14px">
-        <h2 class="compare-head-title">Trends</h2>
-        <span class="compare-head-sub">National market overview</span>
+        <h2 class="trends-page-title">Trends</h2>
+        <span class="trends-page-sub">National market overview</span>
       </div>
     </div>
     <div class="trends-body" id="trendsBody">
@@ -454,22 +422,6 @@
   </div><!-- /trends view -->
 
 </main>
-
-<!-- ── Town picker modal ────────────────────────────────────────────── -->
-<div class="modal-overlay" id="modalOverlay">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title" id="modalTitle">Choose a town</span>
-      <button class="modal-close" onclick="closeTownPicker()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
-    <input type="text" class="modal-search" id="modalSearch" placeholder="Search towns…" autocomplete="off" />
-    <div class="modal-list" id="modalTownList">
-      <!-- Populated by JS -->
-    </div>
-  </div>
-</div>
 
 <!-- ── Shortlist drawer ─────────────────────────────────────────────────── -->
 <div class="shortlist-backdrop" id="shortlistBackdrop" onclick="toggleShortlistDrawer()"></div>
@@ -485,12 +437,6 @@
   </div>
   <div class="shortlist-drawer-body" id="shortlistDrawerBody">
     <!-- Populated by JS -->
-  </div>
-  <div class="shortlist-drawer-footer" id="shortlistDrawerFooter" style="display:none">
-    <button class="shortlist-compare-btn" id="shortlistCompareBtn" onclick="shortlistToCompare()">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
-      Compare selected
-    </button>
   </div>
 </div>
 
